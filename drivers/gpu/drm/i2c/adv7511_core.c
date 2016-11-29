@@ -920,6 +920,22 @@ static int adv7511_encoder_init(struct i2c_client *i2c, struct drm_device *dev,
 	return 0;
 }
 
+static const struct i2c_device_id adv7511_i2c_ids[] = {
+	{ "adv7511", 0 },
+	{ "adv7511w", 0 },
+	{ "adv7513", 0 },
+	{ }
+};
+MODULE_DEVICE_TABLE(i2c, adv7511_i2c_ids);
+
+static const struct of_device_id adv7511_of_ids[] = {
+	{ .compatible = "adi,adv7511", },
+	{ .compatible = "adi,adv7511w", },
+	{ .compatible = "adi,adv7513", },
+	{ }
+};
+MODULE_DEVICE_TABLE(of, adv7511_of_ids);
+
 static const struct i2c_device_id adv7511_ids[] = {
 	{ "adv7511", 0 },
 	{}
@@ -929,8 +945,9 @@ static struct drm_i2c_encoder_driver adv7511_driver = {
 	.i2c_driver = {
 		.driver = {
 			.name = "adv7511",
+			.of_match_table = adv7511_of_ids,
 		},
-		.id_table = adv7511_ids,
+		.id_table = adv7511_i2c_ids,
 		.probe = adv7511_probe,
 		.remove = adv7511_remove,
 	},
