@@ -26,7 +26,6 @@
 
 &axi_ethernet_mdio {
 	phy0: phy@7 {
-		compatible = "marvell,88e1111";
 		device_type = "ethernet-phy";
 		reg = <7>;
 	};
@@ -49,7 +48,7 @@
 	clocks = <&clk_bus_0>;
 
 	dma-channel {
-		adi,buswidth = <64>;
+		adi,buswidth = <512>;
 		adi,type = <0>;
 	};
 };
@@ -59,7 +58,7 @@
 	clocks = <&clk_bus_0>;
 
 	dma-channel {
-		adi,buswidth = <64>;
+		adi,buswidth = <512>;
 		adi,type = <0>;
 	};
 };
@@ -73,6 +72,7 @@
 	adi,rx-sys-clk-select = <0>;
 	adi,rx-out-clk-select = <2>;
 	adi,use-cpll-enable;
+	adi,lanes = <0x4>;
 };
 
 &axi_ad9250_jesd {

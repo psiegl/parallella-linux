@@ -29,12 +29,6 @@
  * Device Access
  */
 
-static inline u32 vsp1_uds_read(struct vsp1_uds *uds, u32 reg)
-{
-	return vsp1_read(uds->entity.vsp1,
-			 reg + uds->entity.index * VI6_UDS_OFFSET);
-}
-
 static inline void vsp1_uds_write(struct vsp1_uds *uds, u32 reg, u32 data)
 {
 	vsp1_write(uds->entity.vsp1,
@@ -176,6 +170,7 @@ static int uds_enum_mbus_code(struct v4l2_subdev *subdev,
 		MEDIA_BUS_FMT_ARGB8888_1X32,
 		MEDIA_BUS_FMT_AYUV8_1X32,
 	};
+	struct vsp1_uds *uds = to_uds(subdev);
 
 	if (code->pad == UDS_PAD_SINK) {
 		if (code->index >= ARRAY_SIZE(codes))
@@ -191,7 +186,8 @@ static int uds_enum_mbus_code(struct v4l2_subdev *subdev,
 		if (code->index)
 			return -EINVAL;
 
-		format = v4l2_subdev_get_try_format(subdev, cfg, UDS_PAD_SINK);
+		format = vsp1_entity_get_pad_format(&uds->entity, cfg,
+						    UDS_PAD_SINK, code->which);
 		code->code = format->code;
 	}
 
@@ -202,9 +198,11 @@ static int uds_enum_frame_size(struct v4l2_subdev *subdev,
 			       struct v4l2_subdev_pad_config *cfg,
 			       struct v4l2_subdev_frame_size_enum *fse)
 {
+	struct vsp1_uds *uds = to_uds(subdev);
 	struct v4l2_mbus_framefmt *format;
 
-	format = v4l2_subdev_get_try_format(subdev, cfg, UDS_PAD_SINK);
+	format = vsp1_entity_get_pad_format(&uds->entity, cfg,
+					    UDS_PAD_SINK, fse->which);
 
 	if (fse->index || fse->code != format->code)
 		return -EINVAL;
@@ -340,7 +338,7 @@ struct vsp1_uds *vsp1_uds_create(struct vsp1_device *vsp1, unsigned int index)
 	subdev = &uds->entity.subdev;
 	v4l2_subdev_init(subdev, &uds_ops);
 
-	subdev->entity.ops = &vsp1_media_ops;
+	subdev->entity.ops = &vsp1->media_ops;
 	subdev->internal_ops = &vsp1_subdev_internal_ops;
 	snprintf(subdev->name, sizeof(subdev->name), "%s uds.%u",
 		 dev_name(vsp1->dev), index);

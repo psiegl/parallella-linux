@@ -1431,7 +1431,7 @@ static int resizer_enum_mbus_code(struct v4l2_subdev *sd,
 			return -EINVAL;
 
 		format = __resizer_get_format(res, cfg, RESZ_PAD_SINK,
-					      V4L2_SUBDEV_FORMAT_TRY);
+					      code->which);
 		code->code = format->code;
 	}
 
@@ -1451,7 +1451,7 @@ static int resizer_enum_frame_size(struct v4l2_subdev *sd,
 	format.code = fse->code;
 	format.width = 1;
 	format.height = 1;
-	resizer_try_format(res, cfg, fse->pad, &format, V4L2_SUBDEV_FORMAT_TRY);
+	resizer_try_format(res, cfg, fse->pad, &format, fse->which);
 	fse->min_width = format.width;
 	fse->min_height = format.height;
 
@@ -1461,7 +1461,7 @@ static int resizer_enum_frame_size(struct v4l2_subdev *sd,
 	format.code = fse->code;
 	format.width = -1;
 	format.height = -1;
-	resizer_try_format(res, cfg, fse->pad, &format, V4L2_SUBDEV_FORMAT_TRY);
+	resizer_try_format(res, cfg, fse->pad, &format, fse->which);
 	fse->max_width = format.width;
 	fse->max_height = format.height;
 
@@ -1623,9 +1623,14 @@ static int resizer_link_setup(struct media_entity *entity,
 {
 	struct v4l2_subdev *sd = media_entity_to_v4l2_subdev(entity);
 	struct isp_res_device *res = v4l2_get_subdevdata(sd);
+	unsigned int index = local->index;
 
-	switch (local->index | media_entity_type(remote->entity)) {
-	case RESZ_PAD_SINK | MEDIA_ENT_T_DEVNODE:
+	/* FIXME: this is actually a hack! */
+	if (is_media_entity_v4l2_subdev(remote->entity))
+		index |= 2 << 16;
+
+	switch (index) {
+	case RESZ_PAD_SINK:
 		/* read from memory */
 		if (flags & MEDIA_LNK_FL_ENABLED) {
 			if (res->input == RESIZER_INPUT_VP)
@@ -1637,7 +1642,7 @@ static int resizer_link_setup(struct media_entity *entity,
 		}
 		break;
 
-	case RESZ_PAD_SINK | MEDIA_ENT_T_V4L2_SUBDEV:
+	case RESZ_PAD_SINK | 2 << 16:
 		/* read from ccdc or previewer */
 		if (flags & MEDIA_LNK_FL_ENABLED) {
 			if (res->input == RESIZER_INPUT_MEMORY)
@@ -1649,7 +1654,7 @@ static int resizer_link_setup(struct media_entity *entity,
 		}
 		break;
 
-	case RESZ_PAD_SOURCE | MEDIA_ENT_T_DEVNODE:
+	case RESZ_PAD_SOURCE:
 		/* resizer always write to memory */
 		break;
 
@@ -1728,7 +1733,7 @@ static int resizer_init_entities(struct isp_res_device *res)
 	pads[RESZ_PAD_SOURCE].flags = MEDIA_PAD_FL_SOURCE;
 
 	me->ops = &resizer_media_ops;
-	ret = media_entity_init(me, RESZ_PADS_NUM, pads, 0);
+	ret = media_entity_pads_init(me, RESZ_PADS_NUM, pads);
 	if (ret < 0)
 		return ret;
 
@@ -1755,21 +1760,8 @@ static int resizer_init_entities(struct isp_res_device *res)
 
 	res->video_out.video.entity.flags |= MEDIA_ENT_FL_DEFAULT;
 
-	/* Connect the video nodes to the resizer subdev. */
-	ret = media_entity_create_link(&res->video_in.video.entity, 0,
-			&res->subdev.entity, RESZ_PAD_SINK, 0);
-	if (ret < 0)
-		goto error_link;
-
-	ret = media_entity_create_link(&res->subdev.entity, RESZ_PAD_SOURCE,
-			&res->video_out.video.entity, 0, 0);
-	if (ret < 0)
-		goto error_link;
-
 	return 0;
 
-error_link:
-	omap3isp_video_cleanup(&res->video_out);
 error_video_out:
 	omap3isp_video_cleanup(&res->video_in);
 error_video_in:

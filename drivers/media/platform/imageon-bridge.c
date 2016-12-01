@@ -16,9 +16,10 @@
 #include <linux/gpio.h>
 #include <linux/interrupt.h>
 #include <linux/of_irq.h>
+#include <linux/of_graph.h>
 #include <media/v4l2-device.h>
 #include <media/v4l2-of.h>
-#include <media/adv7604.h>
+#include <media/i2c/adv7604.h>
 
 #define INPUT_SUBDEV		0
 #define OUTPUT_SUBDEV		1
@@ -34,11 +35,10 @@ struct imageon_bridge {
 	struct v4l2_async_notifier notifier;
 	struct media_device media_dev;
 
-	int gpio_rx_hotplug;
-	int gpio_tx_pd;
-
 	u8 input_edid_data[256];
 	u8 input_edid_blocks;
+
+	int irq;
 };
 
 static struct imageon_bridge *
@@ -82,11 +82,13 @@ static irqreturn_t imageon_bridge_hdmiio_int_handler(int irq, void *dev_id)
 {
 	struct imageon_bridge *bridge = dev_id;
 
-	v4l2_subdev_call(bridge->imageon_subdev[INPUT_SUBDEV].subdev,
-			core, interrupt_service_routine, 0, NULL);
+	if (bridge->imageon_subdev[INPUT_SUBDEV].subdev != NULL)
+		v4l2_subdev_call(bridge->imageon_subdev[INPUT_SUBDEV].subdev,
+				core, interrupt_service_routine, 0, NULL);
 
-	v4l2_subdev_call(bridge->imageon_subdev[OUTPUT_SUBDEV].subdev,
-			core, interrupt_service_routine, 0, NULL);
+	if (bridge->imageon_subdev[OUTPUT_SUBDEV].subdev != NULL)
+		v4l2_subdev_call(bridge->imageon_subdev[OUTPUT_SUBDEV].subdev,
+				core, interrupt_service_routine, 0, NULL);
 
 	return IRQ_HANDLED;
 }
@@ -116,10 +118,6 @@ static int imageon_bridge_async_bound(struct v4l2_async_notifier *notifier,
 		ret = v4l2_subdev_call(subdev, pad, set_edid, &edid);
 		if (ret)
 			return ret;
-
-		/* enable hotplug after 100 ms */
-		mdelay(100);
-		gpio_set_value_cansleep(bridge->gpio_rx_hotplug, 1);
 	}
 
 	if (bridge->imageon_subdev[OUTPUT_SUBDEV].asd.match.of.node
@@ -166,16 +164,6 @@ static struct imageon_bridge *imageon_bridge_parse_dt(struct device *dev)
 		return NULL;
 	}
 
-	bridge->gpio_rx_hotplug = of_get_named_gpio(dev->of_node,
-									"rx_hotplug-gpios", 0);
-	if (!gpio_is_valid(bridge->gpio_rx_hotplug))
-		return NULL;
-
-	bridge->gpio_tx_pd = of_get_named_gpio(dev->of_node,
-									"tx_pd-gpios", 0);
-	if (!gpio_is_valid(bridge->gpio_tx_pd))
-		return NULL;
-
 	for (index = 0; index < 2; index++) {
 		next = of_graph_get_next_endpoint(dev->of_node, ep);
 		if (!next) {
@@ -185,7 +173,7 @@ static struct imageon_bridge *imageon_bridge_parse_dt(struct device *dev)
 
 		bridge->imageon_subdev[index].asd.match_type = V4L2_ASYNC_MATCH_OF;
 		bridge->imageon_subdev[index].asd.match.of.node =
-			v4l2_of_get_remote_port_parent(next);
+			of_graph_get_remote_port_parent(next);
 	}
 
 	return bridge;
@@ -195,16 +183,16 @@ static int imageon_bridge_probe(struct platform_device *pdev)
 {
 	struct imageon_bridge *bridge;
 	struct v4l2_async_subdev **asubdevs;
-	int irq;
 	int ret;
 
 	bridge = imageon_bridge_parse_dt(&pdev->dev);
 	if (bridge == NULL)
 		return -ENOMEM;
 
-	irq = platform_get_irq(pdev, 0);
-	if (irq > 0) {
-		ret = request_threaded_irq(irq, NULL, imageon_bridge_hdmiio_int_handler,
+	bridge->irq = platform_get_irq(pdev, 0);
+	if (bridge->irq > 0) {
+		ret = request_threaded_irq(bridge->irq, NULL,
+				imageon_bridge_hdmiio_int_handler,
 				IRQF_ONESHOT | IRQF_TRIGGER_LOW, dev_name(&pdev->dev),
 				bridge);
 		if (ret < 0) {
@@ -213,21 +201,9 @@ static int imageon_bridge_probe(struct platform_device *pdev)
 		}
 	}
 
-	ret = devm_gpio_request_one(&pdev->dev,
-		bridge->gpio_rx_hotplug, GPIOF_OUT_INIT_LOW, "RX_HOTPLUG");
-	if (ret < 0)
-		return ret;
-
-	ret = devm_gpio_request_one(&pdev->dev,
-		bridge->gpio_tx_pd, GPIOF_OUT_INIT_LOW, "TX_PD");
-	if (ret < 0)
-		return ret;
-
-	gpio_set_value_cansleep(bridge->gpio_rx_hotplug, 0);
-
 	ret = imageon_bridge_load_input_edid(pdev, bridge);
 	if (ret < 0)
-		return ret;
+		goto err;
 
 	bridge->media_dev.dev = &pdev->dev;
 	strlcpy(bridge->media_dev.model, "IMAGEON V4L2 Bridge",
@@ -237,7 +213,7 @@ static int imageon_bridge_probe(struct platform_device *pdev)
 	ret = media_device_register(&bridge->media_dev);
 	if (ret < 0) {
 		dev_err(&pdev->dev, "failed to register media_device\n");
-		return ret;
+		goto err;
 	}
 	bridge->v4l2_dev.mdev = &bridge->media_dev;
 
@@ -247,13 +223,15 @@ static int imageon_bridge_probe(struct platform_device *pdev)
 	ret = v4l2_device_register(&pdev->dev, &bridge->v4l2_dev);
 	if (ret) {
 		dev_err(&pdev->dev, "failed to register v4l2_device\n");
-		return ret;
+		goto err;
 	}
 
 	asubdevs = devm_kzalloc(&pdev->dev, sizeof(struct v4l2_async_subdev*) * 2,
 		GFP_KERNEL);
-	if (bridge == NULL)
-		return -ENOMEM;
+	if (bridge == NULL) {
+		ret = -ENOMEM;
+		goto err;
+	}
 
 	asubdevs[INPUT_SUBDEV] = &bridge->imageon_subdev[INPUT_SUBDEV].asd;
 	asubdevs[OUTPUT_SUBDEV] = &bridge->imageon_subdev[OUTPUT_SUBDEV].asd;
@@ -267,14 +245,19 @@ static int imageon_bridge_probe(struct platform_device *pdev)
 		&bridge->notifier);
 	if (ret) {
 		dev_err(&pdev->dev, "failed to register device nodes\n");
-		return ret;
+		goto err;
 	}
 
 	ret = v4l2_device_register_subdev_nodes(&bridge->v4l2_dev);
 	if (ret < 0)
-		return ret;
+		goto err;
 
 	return 0;
+
+err:
+	if (bridge->irq > 0)
+		free_irq(bridge->irq, pdev);
+	return ret;
 }
 
 static int imageon_bridge_remove(struct platform_device *pdev)
@@ -284,6 +267,8 @@ static int imageon_bridge_remove(struct platform_device *pdev)
 	v4l2_async_notifier_unregister(&bridge->notifier);
 	v4l2_device_unregister(&bridge->v4l2_dev);
 	media_device_unregister(&bridge->media_dev);
+	if (bridge->irq > 0)
+		free_irq(bridge->irq, pdev);
 
 	return 0;
 }
@@ -304,3 +289,6 @@ static struct platform_driver imageon_bridge_driver = {
 	.remove = imageon_bridge_remove,
 };
 module_platform_driver(imageon_bridge_driver);
+
+MODULE_DESCRIPTION("Imageon video bridge");
+MODULE_LICENSE("GPL v2");

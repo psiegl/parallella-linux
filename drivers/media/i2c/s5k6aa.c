@@ -28,7 +28,7 @@
 #include <media/v4l2-device.h>
 #include <media/v4l2-subdev.h>
 #include <media/v4l2-mediabus.h>
-#include <media/s5k6aa.h>
+#include <media/i2c/s5k6aa.h>
 
 static int debug;
 module_param(debug, int, 0644);
@@ -348,7 +348,7 @@ static int s5k6aa_i2c_read(struct i2c_client *client, u16 addr, u16 *val)
 	msg[1].buf = rbuf;
 
 	ret = i2c_transfer(client->adapter, msg, 2);
-	*val = be16_to_cpu(*((u16 *)rbuf));
+	*val = be16_to_cpu(*((__be16 *)rbuf));
 
 	v4l2_dbg(3, debug, client, "i2c_read: 0x%04X : 0x%04x\n", addr, *val);
 
@@ -875,7 +875,7 @@ static int s5k6aa_set_power(struct v4l2_subdev *sd, int on)
 
 	mutex_lock(&s5k6aa->lock);
 
-	if (!on == s5k6aa->power) {
+	if (s5k6aa->power == !on) {
 		if (on) {
 			ret = __s5k6aa_power_on(s5k6aa);
 			if (!ret)
@@ -1577,8 +1577,8 @@ static int s5k6aa_probe(struct i2c_client *client,
 	sd->flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
 
 	s5k6aa->pad.flags = MEDIA_PAD_FL_SOURCE;
-	sd->entity.type = MEDIA_ENT_T_V4L2_SUBDEV_SENSOR;
-	ret = media_entity_init(&sd->entity, 1, &s5k6aa->pad, 0);
+	sd->entity.function = MEDIA_ENT_F_CAM_SENSOR;
+	ret = media_entity_pads_init(&sd->entity, 1, &s5k6aa->pad);
 	if (ret)
 		return ret;
 

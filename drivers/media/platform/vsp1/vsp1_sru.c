@@ -151,10 +151,13 @@ static int sru_s_stream(struct v4l2_subdev *subdev, int enable)
 	/* Take the control handler lock to ensure that the CTRL0 value won't be
 	 * changed behind our back by a set control operation.
 	 */
-	mutex_lock(sru->ctrls.lock);
+	if (sru->entity.vsp1->info->uapi)
+		mutex_lock(sru->ctrls.lock);
 	ctrl0 |= vsp1_sru_read(sru, VI6_SRU_CTRL0)
 	       & (VI6_SRU_CTRL0_PARAM0_MASK | VI6_SRU_CTRL0_PARAM1_MASK);
-	mutex_unlock(sru->ctrls.lock);
+	vsp1_sru_write(sru, VI6_SRU_CTRL0, ctrl0);
+	if (sru->entity.vsp1->info->uapi)
+		mutex_unlock(sru->ctrls.lock);
 
 	vsp1_sru_write(sru, VI6_SRU_CTRL1, VI6_SRU_CTRL1_PARAM5);
 
@@ -173,6 +176,7 @@ static int sru_enum_mbus_code(struct v4l2_subdev *subdev,
 		MEDIA_BUS_FMT_ARGB8888_1X32,
 		MEDIA_BUS_FMT_AYUV8_1X32,
 	};
+	struct vsp1_sru *sru = to_sru(subdev);
 	struct v4l2_mbus_framefmt *format;
 
 	if (code->pad == SRU_PAD_SINK) {
@@ -187,7 +191,8 @@ static int sru_enum_mbus_code(struct v4l2_subdev *subdev,
 		if (code->index)
 			return -EINVAL;
 
-		format = v4l2_subdev_get_try_format(subdev, cfg, SRU_PAD_SINK);
+		format = vsp1_entity_get_pad_format(&sru->entity, cfg,
+						    SRU_PAD_SINK, code->which);
 		code->code = format->code;
 	}
 
@@ -198,9 +203,11 @@ static int sru_enum_frame_size(struct v4l2_subdev *subdev,
 			       struct v4l2_subdev_pad_config *cfg,
 			       struct v4l2_subdev_frame_size_enum *fse)
 {
+	struct vsp1_sru *sru = to_sru(subdev);
 	struct v4l2_mbus_framefmt *format;
 
-	format = v4l2_subdev_get_try_format(subdev, cfg, SRU_PAD_SINK);
+	format = vsp1_entity_get_pad_format(&sru->entity, cfg,
+					    SRU_PAD_SINK, fse->which);
 
 	if (fse->index || fse->code != format->code)
 		return -EINVAL;
@@ -356,7 +363,7 @@ struct vsp1_sru *vsp1_sru_create(struct vsp1_device *vsp1)
 	subdev = &sru->entity.subdev;
 	v4l2_subdev_init(subdev, &sru_ops);
 
-	subdev->entity.ops = &vsp1_media_ops;
+	subdev->entity.ops = &vsp1->media_ops;
 	subdev->internal_ops = &vsp1_subdev_internal_ops;
 	snprintf(subdev->name, sizeof(subdev->name), "%s sru",
 		 dev_name(vsp1->dev));

@@ -45,6 +45,7 @@
 #include <linux/of_mdio.h>
 #include <linux/timer.h>
 #include <linux/ptp_clock_kernel.h>
+#include <linux/timecounter.h>
 
 /************************** Constant Definitions *****************************/
 
@@ -379,7 +380,7 @@ MDC_DIV_64, MDC_DIV_96, MDC_DIV_128, MDC_DIV_224 };
 #define XEMACPS_IXR_RXUSED_MASK		0x00000004 /* Rx buffer used bit read */
 #define XEMACPS_IXR_FRAMERX_MASK	0x00000002 /* Frame received ok */
 #define XEMACPS_IXR_MGMNT_MASK		0x00000001 /* PHY management complete */
-#define XEMACPS_IXR_ALL_MASK		0x03FC7FFE /* Everything except MDIO */
+#define XEMACPS_IXR_ALL_MASK		0x00000CFE /* all interrupts in use */
 
 #define XEMACPS_IXR_TX_ERR_MASK	(XEMACPS_IXR_TXEXH_MASK |		\
 					XEMACPS_IXR_RETRY_MASK |	\
@@ -495,7 +496,6 @@ struct xemacps_bd {
 	u32 addr;
 	u32 ctrl;
 };
-
 
 /* Our private device data. */
 struct net_local {
@@ -690,7 +690,6 @@ timeout:
 	return -ETIMEDOUT;
 }
 
-
 /**
  * xemacps_mdio_reset - mdio reset. It seems to be required per open
  * source documentation phy.txt. But there is no reset in this device.
@@ -778,7 +777,7 @@ static void xemacps_adjust_link(struct net_device *ndev)
 
 			if (gmii2rgmii_phydev != NULL) {
 				xemacps_mdio_write(lp->mii_bus,
-					gmii2rgmii_phydev->addr,
+					gmii2rgmii_phydev->mdio.addr,
 					XEMACPS_GMII2RGMII_REG_NUM,
 					gmii2rgmii_reg);
 			}
@@ -842,12 +841,16 @@ static int xemacps_mii_probe(struct net_device *ndev)
 
 	if (!phydev) {
 		dev_err(&lp->pdev->dev, "%s: no PHY found\n", ndev->name);
+		if (lp->gmii2rgmii_phy_dev) {
+			phy_disconnect(lp->gmii2rgmii_phy_dev);
+			lp->gmii2rgmii_phy_dev = NULL;
+		}
 		return -1;
 	}
 
 	dev_dbg(&lp->pdev->dev,
 		"GEM: phydev %p, phydev->phy_id 0x%x, phydev->addr 0x%x\n",
-		phydev, phydev->phy_id, phydev->addr);
+		phydev, phydev->phy_id, phydev->mdio.addr);
 
 	phydev->supported &= (PHY_GBIT_FEATURES | SUPPORTED_Pause |
 							SUPPORTED_Asym_Pause);
@@ -861,7 +864,7 @@ static int xemacps_mii_probe(struct net_device *ndev)
 	phy_start(lp->phy_dev);
 
 	dev_dbg(&lp->pdev->dev, "phy_addr 0x%x, phy_id 0x%08x\n",
-			lp->phy_dev->addr, lp->phy_dev->phy_id);
+			lp->phy_dev->mdio.addr, lp->phy_dev->phy_id);
 
 	dev_dbg(&lp->pdev->dev, "attach [%s] phy driver\n",
 			lp->phy_dev->drv->name);
@@ -898,12 +901,6 @@ static int xemacps_mii_init(struct net_local *lp)
 	lp->mii_bus->priv = lp;
 	lp->mii_bus->parent = &lp->ndev->dev;
 
-	lp->mii_bus->irq = kmalloc(sizeof(int)*PHY_MAX_ADDR, GFP_KERNEL);
-	if (!lp->mii_bus->irq) {
-		rc = -ENOMEM;
-		goto err_out_free_mdiobus;
-	}
-
 	for (i = 0; i < PHY_MAX_ADDR; i++)
 		lp->mii_bus->irq[i] = PHY_POLL;
 	npp = of_get_parent(np);
@@ -913,13 +910,11 @@ static int xemacps_mii_init(struct net_local *lp)
 
 	if (lp->phy_node) {
 		if (of_mdiobus_register(lp->mii_bus, np))
-			goto err_out_free_mdio_irq;
+			goto err_out_free_mdiobus;
 	}
 
 	return 0;
 
-err_out_free_mdio_irq:
-	kfree(lp->mii_bus->irq);
 err_out_free_mdiobus:
 	mdiobus_free(lp->mii_bus);
 err_out:
@@ -1000,6 +995,7 @@ static void xemacps_set_hwaddr(struct net_local *lp)
 static void xemacps_reset_hw(struct net_local *lp)
 {
 	u32 regisr;
+
 	/* make sure we have the buffer for ourselves */
 	wmb();
 
@@ -1097,6 +1093,7 @@ static void xemacps_systim_to_hwtstamp(struct net_local *lp,
 				u64 regval)
 {
 	u64 ns;
+
 	ns = timecounter_cyc2time(&lp->tc, regval);
 	memset(shhwtstamps, 0, sizeof(struct skb_shared_hwtstamps));
 	shhwtstamps->hwtstamp = ns_to_ktime(ns);
@@ -1174,7 +1171,8 @@ static int xemacps_ptp_enable(struct ptp_clock_info *ptp,
  * @ts: Timespec structure to hold the current time value
  * Return: Always returns zero
  */
-static int xemacps_ptp_gettime(struct ptp_clock_info *ptp, struct timespec *ts)
+static int xemacps_ptp_gettime(struct ptp_clock_info *ptp,
+				struct timespec64 *ts)
 {
 	unsigned long flags;
 	struct net_local *lp = container_of(ptp, struct net_local, ptp_caps);
@@ -1197,7 +1195,7 @@ static int xemacps_ptp_gettime(struct ptp_clock_info *ptp, struct timespec *ts)
  * Return: Always returns zero
  */
 static int xemacps_ptp_settime(struct ptp_clock_info *ptp,
-			       const struct timespec *ts)
+			       const struct timespec64 *ts)
 {
 	unsigned long flags;
 	struct net_local *lp = container_of(ptp, struct net_local, ptp_caps);
@@ -1285,8 +1283,8 @@ static void xemacps_ptp_init(struct net_local *lp)
 	lp->ptp_caps.pps = 0;
 	lp->ptp_caps.adjfreq = xemacps_ptp_adjfreq;
 	lp->ptp_caps.adjtime = xemacps_ptp_adjtime;
-	lp->ptp_caps.gettime = xemacps_ptp_gettime;
-	lp->ptp_caps.settime = xemacps_ptp_settime;
+	lp->ptp_caps.gettime64 = xemacps_ptp_gettime;
+	lp->ptp_caps.settime64 = xemacps_ptp_settime;
 	lp->ptp_caps.enable = xemacps_ptp_enable;
 
 	rate = clk_get_rate(lp->aperclk);
@@ -1432,6 +1430,7 @@ static int xemacps_rx(struct net_local *lp, int budget)
 			}
 		}
 #endif /* CONFIG_XILINX_PS_EMAC_HWTSTAMP */
+
 		size += len;
 		packets++;
 		netif_receive_skb(skb);
@@ -1642,6 +1641,7 @@ static irqreturn_t xemacps_interrupt(int irq, void *dev_id)
 				XEMACPS_IDR_OFFSET, XEMACPS_IXR_FRAMERX_MASK);
 			napi_schedule(&lp->napi);
 		}
+
 		regisr = xemacps_read(lp->baseaddr, XEMACPS_ISR_OFFSET);
 		xemacps_write(lp->baseaddr, XEMACPS_ISR_OFFSET, regisr);
 	}
@@ -2053,22 +2053,17 @@ static int xemacps_open(struct net_device *ndev)
 							(unsigned long)lp);
 	lp->timerready = true;
 
+	netif_carrier_off(ndev);
 	rc = xemacps_mii_probe(ndev);
 	if (rc != 0) {
 		dev_err(&lp->pdev->dev,
 			"%s mii_probe fail.\n", lp->mii_bus->name);
-		if (rc == (-2)) {
-			mdiobus_unregister(lp->mii_bus);
-			kfree(lp->mii_bus->irq);
-			mdiobus_free(lp->mii_bus);
-		}
 		rc = -ENXIO;
 		goto err_pm_put;
 	}
 
 	mod_timer(&(lp->gen_purpose_timer),
 		jiffies + msecs_to_jiffies(XEAMCPS_GEN_PURPOSE_TIMER_LOAD));
-	netif_carrier_on(ndev);
 	netif_start_queue(ndev);
 	tasklet_enable(&lp->tx_bdreclaim_tasklet);
 
@@ -2107,11 +2102,12 @@ static int xemacps_close(struct net_device *ndev)
 	netif_stop_queue(ndev);
 	napi_disable(&lp->napi);
 	tasklet_disable(&lp->tx_bdreclaim_tasklet);
-	netif_carrier_off(ndev);
 	if (lp->phy_dev)
 		phy_disconnect(lp->phy_dev);
-	if (lp->gmii2rgmii_phy_node)
+	if (lp->gmii2rgmii_phy_dev)
 		phy_disconnect(lp->gmii2rgmii_phy_dev);
+	netif_carrier_off(ndev);
+
 	xemacps_reset_hw(lp);
 #ifdef CONFIG_XILINX_PS_EMAC_HWTSTAMP
 	xemacps_ptp_close(lp);
@@ -2575,7 +2571,6 @@ xemacps_get_wol(struct net_device *ndev, struct ethtool_wolinfo *ewol)
 		ewol->wolopts |= WAKE_UCAST;
 	if (regval & XEMACPS_WOL_MAGIC_MASK)
 		ewol->wolopts |= WAKE_MAGIC;
-
 }
 
 /**
@@ -2812,7 +2807,6 @@ static int xemacps_ioctl(struct net_device *ndev, struct ifreq *rq, int cmd)
 		dev_info(&lp->pdev->dev, "ioctl %d not implemented.\n", cmd);
 		return -EOPNOTSUPP;
 	}
-
 }
 
 /**
@@ -2927,7 +2921,6 @@ static int xemacps_probe(struct platform_device *pdev)
 	/* Set MDIO clock divider */
 	regval = (MDC_DIV_224 << XEMACPS_NWCFG_MDC_SHIFT_MASK);
 	xemacps_write(lp->baseaddr, XEMACPS_NWCFG_OFFSET, regval);
-
 
 	regval = XEMACPS_NWCTRL_MDEN_MASK;
 	xemacps_write(lp->baseaddr, XEMACPS_NWCTRL_OFFSET, regval);

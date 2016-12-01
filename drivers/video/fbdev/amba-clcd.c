@@ -440,13 +440,14 @@ static int clcdfb_register(struct clcd_fb *fb)
 		fb->off_ienb = CLCD_PL111_IENB;
 		fb->off_cntl = CLCD_PL111_CNTL;
 	} else {
-#ifdef CONFIG_ARCH_VERSATILE
-		fb->off_ienb = CLCD_PL111_IENB;
-		fb->off_cntl = CLCD_PL111_CNTL;
-#else
-		fb->off_ienb = CLCD_PL110_IENB;
-		fb->off_cntl = CLCD_PL110_CNTL;
-#endif
+		if (of_machine_is_compatible("arm,versatile-ab") ||
+		    of_machine_is_compatible("arm,versatile-pb")) {
+			fb->off_ienb = CLCD_PL111_IENB;
+			fb->off_cntl = CLCD_PL111_CNTL;
+		} else {
+			fb->off_ienb = CLCD_PL110_IENB;
+			fb->off_cntl = CLCD_PL110_CNTL;
+		}
 	}
 
 	fb->clk = clk_get(&fb->dev->dev, NULL);
@@ -599,6 +600,9 @@ static int clcdfb_of_get_mode(struct device *dev, struct device_node *endpoint,
 
 	len = clcdfb_snprintf_mode(NULL, 0, mode);
 	name = devm_kzalloc(dev, len + 1, GFP_KERNEL);
+	if (!name)
+		return -ENOMEM;
+
 	clcdfb_snprintf_mode(name, len + 1, mode);
 	mode->name = name;
 
@@ -771,8 +775,8 @@ static int clcdfb_of_dma_setup(struct clcd_fb *fb)
 
 static int clcdfb_of_dma_mmap(struct clcd_fb *fb, struct vm_area_struct *vma)
 {
-	return dma_mmap_writecombine(&fb->dev->dev, vma, fb->fb.screen_base,
-			fb->fb.fix.smem_start, fb->fb.fix.smem_len);
+	return dma_mmap_wc(&fb->dev->dev, vma, fb->fb.screen_base,
+			   fb->fb.fix.smem_start, fb->fb.fix.smem_len);
 }
 
 static void clcdfb_of_dma_remove(struct clcd_fb *fb)

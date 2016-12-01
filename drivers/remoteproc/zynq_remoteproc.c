@@ -30,13 +30,12 @@
 #include <linux/smp.h>
 #include <linux/irqchip/arm-gic.h>
 #include <asm/outercache.h>
-#include <asm/cacheflush.h>
 #include <linux/slab.h>
 #include <linux/cpu.h>
 
 #include "remoteproc_internal.h"
 
-extern int __cpuinit zynq_cpun_start(u32 address, int cpu);
+extern int zynq_cpun_start(u32 address, int cpu);
 
 /* Module parameter */
 static char *firmware;
@@ -51,7 +50,6 @@ struct irq_list {
 struct zynq_rproc_pdata {
 	struct irq_list mylist;
 	struct rproc *rproc;
-	u32 ipino;
 	u32 vring0;
 	u32 vring1;
 	u32 mem_start;
@@ -65,9 +63,6 @@ static struct work_struct workqueue;
 static void handle_event(struct work_struct *work)
 {
 	struct zynq_rproc_pdata *local = platform_get_drvdata(remoteprocdev);
-
-	flush_cache_all();
-	outer_flush_range(local->mem_start, local->mem_end);
 
 	if (rproc_vq_interrupt(local->rproc, 0) == IRQ_NONE)
 		dev_dbg(&remoteprocdev->dev, "no message found in vqid 0\n");
@@ -83,15 +78,13 @@ static int zynq_rproc_start(struct rproc *rproc)
 {
 	struct device *dev = rproc->dev.parent;
 	struct platform_device *pdev = to_platform_device(dev);
-	struct zynq_rproc_pdata *local = platform_get_drvdata(pdev);
 	int ret;
 
 	dev_dbg(dev, "%s\n", __func__);
 	INIT_WORK(&workqueue, handle_event);
 
-	flush_cache_all();
-	outer_flush_range(local->mem_start, local->mem_end);
 
+	mb();
 	remoteprocdev = pdev;
 	ret = zynq_cpun_start(rproc->bootaddr, 1);
 
@@ -261,23 +254,17 @@ static int zynq_remoteproc_probe(struct platform_device *pdev)
 	}
 
 	/* Allocate free IPI number */
-	ret = of_property_read_u32(pdev->dev.of_node, "ipino", &local->ipino);
-	if (ret < 0) {
-		dev_err(&pdev->dev, "unable to read property");
-		goto irq_fault;
-	}
-
-	ret = set_ipi_handler(local->ipino, ipi_kick, "Firmware kick");
-	if (ret) {
-		dev_err(&pdev->dev, "IPI handler already registered\n");
-		goto irq_fault;
-	}
-
 	/* Read vring0 ipi number */
 	ret = of_property_read_u32(pdev->dev.of_node, "vring0", &local->vring0);
 	if (ret < 0) {
 		dev_err(&pdev->dev, "unable to read property");
 		goto ipi_fault;
+	}
+
+	ret = set_ipi_handler(local->vring0, ipi_kick, "Firmware kick");
+	if (ret) {
+		dev_err(&pdev->dev, "IPI handler already registered\n");
+		goto irq_fault;
 	}
 
 	/* Read vring1 ipi number */
@@ -315,7 +302,7 @@ static int zynq_remoteproc_probe(struct platform_device *pdev)
 rproc_fault:
 	rproc_put(local->rproc);
 ipi_fault:
-	clear_ipi_handler(local->ipino);
+	clear_ipi_handler(local->vring0);
 
 irq_fault:
 	clear_irq(pdev);
@@ -341,7 +328,7 @@ static int zynq_remoteproc_remove(struct platform_device *pdev)
 
 	dma_release_declared_memory(&pdev->dev);
 
-	clear_ipi_handler(local->ipino);
+	clear_ipi_handler(local->vring0);
 	clear_irq(pdev);
 
 	rproc_del(local->rproc);

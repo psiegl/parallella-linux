@@ -360,11 +360,11 @@ static ssize_t ad5933_show(struct device *dev,
 	mutex_lock(&indio_dev->mlock);
 	switch ((u32) this_attr->address) {
 	case AD5933_OUT_RANGE:
-		len = sprintf(buf, "%d\n",
+		len = sprintf(buf, "%u\n",
 			      st->range_avail[(st->ctrl_hb >> 1) & 0x3]);
 		break;
 	case AD5933_OUT_RANGE_AVAIL:
-		len = sprintf(buf, "%d %d %d %d\n", st->range_avail[0],
+		len = sprintf(buf, "%u %u %u %u\n", st->range_avail[0],
 			      st->range_avail[3], st->range_avail[2],
 			      st->range_avail[1]);
 		break;
@@ -520,7 +520,7 @@ static int ad5933_read_raw(struct iio_dev *indio_dev,
 {
 	struct ad5933_state *st = iio_priv(indio_dev);
 	__be16 dat;
-	int ret = -EINVAL;
+	int ret;
 
 	switch (m) {
 	case IIO_CHAN_INFO_RAW:
@@ -558,7 +558,7 @@ out:
 }
 
 static const struct iio_info ad5933_info = {
-	.read_raw = &ad5933_read_raw,
+	.read_raw = ad5933_read_raw,
 	.attrs = &ad5933_attribute_group,
 	.driver_module = THIS_MODULE,
 };
@@ -616,16 +616,16 @@ static int ad5933_ring_postdisable(struct iio_dev *indio_dev)
 }
 
 static const struct iio_buffer_setup_ops ad5933_ring_setup_ops = {
-	.preenable = &ad5933_ring_preenable,
-	.postenable = &ad5933_ring_postenable,
-	.postdisable = &ad5933_ring_postdisable,
+	.preenable = ad5933_ring_preenable,
+	.postenable = ad5933_ring_postenable,
+	.postdisable = ad5933_ring_postdisable,
 };
 
 static int ad5933_register_ring_funcs_and_init(struct iio_dev *indio_dev)
 {
 	struct iio_buffer *buffer;
 
-	buffer = iio_kfifo_allocate(indio_dev);
+	buffer = iio_kfifo_allocate();
 	if (!buffer)
 		return -ENOMEM;
 
@@ -644,7 +644,8 @@ static void ad5933_work(struct work_struct *work)
 	struct ad5933_state *st = container_of(work,
 		struct ad5933_state, work.work);
 	struct iio_dev *indio_dev = i2c_get_clientdata(st->client);
-	signed short buf[2];
+	__be16 buf[2];
+	int val[2];
 	unsigned char status;
 
 	mutex_lock(&indio_dev->mlock);
@@ -668,12 +669,12 @@ static void ad5933_work(struct work_struct *work)
 				scan_count * 2, (u8 *)buf);
 
 		if (scan_count == 2) {
-			buf[0] = be16_to_cpu(buf[0]);
-			buf[1] = be16_to_cpu(buf[1]);
+			val[0] = be16_to_cpu(buf[0]);
+			val[1] = be16_to_cpu(buf[1]);
 		} else {
-			buf[0] = be16_to_cpu(buf[0]);
+			val[0] = be16_to_cpu(buf[0]);
 		}
-		iio_push_to_buffers(indio_dev, buf);
+		iio_push_to_buffers(indio_dev, val);
 	} else {
 		/* no data available - try again later */
 		schedule_delayed_work(&st->work, st->poll_time_jiffies);
@@ -703,7 +704,7 @@ static int ad5933_probe(struct i2c_client *client,
 	struct iio_dev *indio_dev;
 
 	indio_dev = devm_iio_device_alloc(&client->dev, sizeof(*st));
-	if (indio_dev == NULL)
+	if (!indio_dev)
 		return -ENOMEM;
 
 	st = iio_priv(indio_dev);
@@ -756,10 +757,6 @@ static int ad5933_probe(struct i2c_client *client,
 	ret = iio_device_register(indio_dev);
 	if (ret)
 		goto error_unreg_ring;
-
-	/* enable both REAL and IMAG channels by default */
-	iio_scan_mask_set(indio_dev, indio_dev->buffer, 0);
-	iio_scan_mask_set(indio_dev, indio_dev->buffer, 1);
 
 	return 0;
 

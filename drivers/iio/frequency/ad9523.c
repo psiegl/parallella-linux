@@ -468,7 +468,7 @@ static int ad9523_store_eeprom(struct iio_dev *indio_dev)
 
 	tmp = 4;
 	do {
-		msleep(16);
+		msleep(20);
 		ret = ad9523_read(indio_dev,
 				  AD9523_EEPROM_DATA_XFER_STATUS);
 		if (ret < 0)
@@ -531,7 +531,7 @@ static ssize_t ad9523_store(struct device *dev,
 		return ret;
 
 	if (!state)
-		return 0;
+		return len;
 
 	mutex_lock(&st->lock);
 	switch ((u32)this_attr->address) {
@@ -666,7 +666,7 @@ static int ad9523_read_raw(struct iio_dev *indio_dev,
 		code = (AD9523_CLK_DIST_DIV_PHASE_REV(ret) * 3141592) /
 			AD9523_CLK_DIST_DIV_REV(ret);
 		*val = code / 1000000;
-		*val2 = (code % 1000000) * 10;
+		*val2 = code % 1000000;
 		return IIO_VAL_INT_PLUS_MICRO;
 	default:
 		return -EINVAL;
@@ -1331,14 +1331,11 @@ static int ad9523_probe(struct spi_device *spi)
 			return ret;
 	}
 
-	st->pwrdown_gpio = devm_gpiod_get(&spi->dev, "powerdown");
-	if (!IS_ERR(st->pwrdown_gpio)) {
-		ret = gpiod_direction_output(st->pwrdown_gpio, 1);
-	}
+	st->pwrdown_gpio = devm_gpiod_get(&spi->dev, "powerdown",
+		GPIOD_OUT_HIGH);
 
-	st->reset_gpio = devm_gpiod_get(&spi->dev, "reset");
+	st->reset_gpio = devm_gpiod_get(&spi->dev, "reset", GPIOD_OUT_LOW);
 	if (!IS_ERR(st->reset_gpio)) {
-		ret = gpiod_direction_output(st->reset_gpio, 0);
 		udelay(1);
 
 		ret = gpiod_direction_output(st->reset_gpio, 1);
@@ -1346,10 +1343,7 @@ static int ad9523_probe(struct spi_device *spi)
 
 	mdelay(10);
 
-	st->sync_gpio = devm_gpiod_get(&spi->dev, "sync");
-	if (!IS_ERR(st->sync_gpio)) {
-		ret = gpiod_direction_output(st->sync_gpio, 1);
-	}
+	st->sync_gpio = devm_gpiod_get(&spi->dev, "sync", GPIOD_OUT_HIGH);
 
 	spi_set_drvdata(spi, indio_dev);
 	st->spi = spi;
@@ -1404,7 +1398,6 @@ MODULE_DEVICE_TABLE(spi, ad9523_id);
 static struct spi_driver ad9523_driver = {
 	.driver = {
 		.name	= "ad9523",
-		.owner	= THIS_MODULE,
 	},
 	.probe		= ad9523_probe,
 	.remove		= ad9523_remove,

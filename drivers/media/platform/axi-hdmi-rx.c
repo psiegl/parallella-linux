@@ -16,6 +16,7 @@
 #include <linux/firmware.h>
 #include <linux/platform_device.h>
 #include <linux/mutex.h>
+#include <linux/of_graph.h>
 
 #include <media/videobuf2-dma-contig.h>
 #include <media/v4l2-event.h>
@@ -24,15 +25,16 @@
 #include <media/v4l2-dev.h>
 #include <media/v4l2-device.h>
 #include <media/v4l2-ioctl.h>
-#include <media/adv7604.h>
+#include <media/i2c/adv7604.h>
 
 #define AXI_HDMI_RX_REG_VERSION		0x000
 #define AXI_HDMI_RX_REG_ID		0x004
 #define AXI_HDMI_RX_REG_ENABLE		0x040
 #define AXI_HDMI_RX_REG_CONFIG		0x044
-#define AXI_HDMI_RX_REG_SRC_SEL		0x048
-#define AXI_HDMI_RX_REG_DMA_STATUS	0x078
-#define AXI_HDMI_RX_REG_TPM_STATUS	0x07c
+#define AXI_HDMI_RX_REG_CLK_COUNT	0x054
+#define AXI_HDMI_RX_REG_CLK_RATIO	0x058
+#define AXI_HDMI_RX_REG_DMA_STATUS	0x060
+#define AXI_HDMI_RX_REG_TPM_STATUS	0x064
 #define AXI_HDMI_RX_REG_STATUS		0x080
 #define AXI_HDMI_RX_REG_TIMING		0x400
 #define AXI_HDMI_RX_REG_DETECTED_TIMING 0x404
@@ -71,11 +73,14 @@ struct axi_hdmi_rx {
 	struct v4l2_async_subdev asd;
 	struct v4l2_async_subdev *asds[1];
 
+	u8 bus_width;
+
 	u8 edid_data[256];
+	u8 edid_blocks;
 };
 
 struct axi_hdmi_rx_buffer {
-	struct vb2_buffer vb;
+	struct vb2_v4l2_buffer vb;
 	struct list_head head;
 };
 
@@ -104,7 +109,8 @@ static struct axi_hdmi_rx_stream *axi_hdmi_rx_file_to_stream(struct file *file)
 
 static struct axi_hdmi_rx_buffer *vb2_buf_to_hdmi_rx_buf(struct vb2_buffer *vb)
 {
-	return container_of(vb, struct axi_hdmi_rx_buffer, vb);
+	struct vb2_v4l2_buffer *v4l2_buf = to_vb2_v4l2_buffer(vb);
+	return container_of(v4l2_buf, struct axi_hdmi_rx_buffer, vb);
 }
 
 static const struct v4l2_file_operations axi_hdmi_rx_fops = {
@@ -118,24 +124,24 @@ static const struct v4l2_file_operations axi_hdmi_rx_fops = {
 };
 
 static int axi_hdmi_rx_queue_setup(struct vb2_queue *q,
-	const struct v4l2_format *fmt, unsigned int *num_buffers,
-	unsigned int *num_planes, unsigned int sizes[], void *alloc_ctxs[])
+	unsigned int *num_buffers, unsigned int *num_planes,
+	unsigned int sizes[], void *alloc_ctxs[])
 {
 	struct axi_hdmi_rx *hdmi_rx = vb2_get_drv_priv(q);
 	struct axi_hdmi_rx_stream *s = &hdmi_rx->stream;
 
+	alloc_ctxs[0] = hdmi_rx->alloc_ctx;
+
 	if (*num_buffers < 1)
 		*num_buffers = 1;
-	*num_planes = 1;
 
-	if (fmt)
-		sizes[0] = fmt->fmt.pix.sizeimage;
-	else
+	if (*num_planes) {
+		if (sizes[0] < s->stride * s->height)
+			return -EINVAL;
+	} else {
 		sizes[0] = s->stride * s->height;
-	if (sizes[0] == 0)
-		return -EINVAL;
-
-	alloc_ctxs[0] = hdmi_rx->alloc_ctx;
+		*num_planes = 1;
+	}
 
 	return 0;
 }
@@ -160,7 +166,7 @@ static int axi_hdmi_rx_buf_prepare(struct vb2_buffer *vb)
 static void axi_hdmi_rx_dma_done(void *arg)
 {
 	struct axi_hdmi_rx_buffer *buf = arg;
-	struct vb2_queue *q = buf->vb.vb2_queue;
+	struct vb2_queue *q = buf->vb.vb2_buf.vb2_queue;
 	struct axi_hdmi_rx *hdmi_rx = vb2_get_drv_priv(q);
 	struct axi_hdmi_rx_stream *s = &hdmi_rx->stream;
 	unsigned long flags;
@@ -169,8 +175,8 @@ static void axi_hdmi_rx_dma_done(void *arg)
 	list_del(&buf->head);
 	spin_unlock_irqrestore(&s->spinlock, flags);
 
-	v4l2_get_timestamp(&buf->vb.v4l2_buf.timestamp);
-	vb2_buffer_done(&buf->vb, VB2_BUF_STATE_DONE);
+	buf->vb.vb2_buf.timestamp = ktime_get_ns();
+	vb2_buffer_done(&buf->vb.vb2_buf, VB2_BUF_STATE_DONE);
 }
 
 static void axi_hdmi_rx_buf_queue(struct vb2_buffer *vb)
@@ -203,6 +209,9 @@ static void axi_hdmi_rx_buf_queue(struct vb2_buffer *vb)
 		bpp = 3;
 		break;
 	case V4L2_PIX_FMT_YVYU:
+	case V4L2_PIX_FMT_YUYV:
+	case V4L2_PIX_FMT_VYUY:
+	case V4L2_PIX_FMT_UYVY:
 		bpp = 2;
 		break;
 	default:
@@ -265,7 +274,7 @@ static void axi_hdmi_rx_stop_streaming(struct vb2_queue *q)
 	spin_lock_irqsave(&s->spinlock, flags);
 
 	list_for_each_entry(buf, &s->queued_buffers, head)
-		vb2_buffer_done(&buf->vb, VB2_BUF_STATE_ERROR);
+		vb2_buffer_done(&buf->vb.vb2_buf, VB2_BUF_STATE_ERROR);
 
 	INIT_LIST_HEAD(&s->queued_buffers);
 
@@ -297,7 +306,8 @@ static int axi_hdmi_rx_g_register(struct file *file, void *priv_fh,
 	case AXI_HDMI_RX_REG_ID:
 	case AXI_HDMI_RX_REG_ENABLE:
 	case AXI_HDMI_RX_REG_CONFIG:
-	case AXI_HDMI_RX_REG_SRC_SEL:
+	case AXI_HDMI_RX_REG_CLK_COUNT:
+	case AXI_HDMI_RX_REG_CLK_RATIO:
 	case AXI_HDMI_RX_REG_DMA_STATUS:
 	case AXI_HDMI_RX_REG_TPM_STATUS:
 	case AXI_HDMI_RX_REG_STATUS:
@@ -322,7 +332,6 @@ static int axi_hdmi_rx_s_register(struct file *file, void *priv_fh,
 	switch (reg->reg) {
 	case AXI_HDMI_RX_REG_ENABLE:
 	case AXI_HDMI_RX_REG_CONFIG:
-	case AXI_HDMI_RX_REG_SRC_SEL:
 	case AXI_HDMI_RX_REG_DMA_STATUS:
 	case AXI_HDMI_RX_REG_TPM_STATUS:
 	case AXI_HDMI_RX_REG_STATUS:
@@ -458,8 +467,20 @@ static int axi_hdmi_rx_enum_fmt_vid_cap(struct file *file, void *priv_fh,
 		f->pixelformat = V4L2_PIX_FMT_BGR24;
 		break;
 	case 4:
-		strlcpy(f->description, "YCbCr", sizeof(f->description));
+		strlcpy(f->description, "YCBCr", sizeof(f->description));
 		f->pixelformat = V4L2_PIX_FMT_YVYU;
+		break;
+	case 5:
+		strlcpy(f->description, "YCrCb", sizeof(f->description));
+		f->pixelformat = V4L2_PIX_FMT_YUYV;
+		break;
+	case 6:
+		strlcpy(f->description, "CbCrY", sizeof(f->description));
+		f->pixelformat = V4L2_PIX_FMT_VYUY;
+		break;
+	case 7:
+		strlcpy(f->description, "CrCbY", sizeof(f->description));
+		f->pixelformat = V4L2_PIX_FMT_UYVY;
 		break;
 	default:
 		return -EINVAL;
@@ -488,6 +509,9 @@ static int axi_hdmi_rx_g_fmt_vid_cap(struct file *file, void *priv_fh,
 		pix->colorspace = V4L2_COLORSPACE_SRGB;
 		break;
 	case V4L2_PIX_FMT_YVYU:
+	case V4L2_PIX_FMT_YUYV:
+	case V4L2_PIX_FMT_VYUY:
+	case V4L2_PIX_FMT_UYVY:
 		pix->colorspace = V4L2_COLORSPACE_REC709;
 		break;
 	default:
@@ -527,6 +551,9 @@ static int axi_hdmi_rx_try_fmt_vid_cap(struct file *file, void *priv_fh,
 		pix->bytesperline = pix->width * 4;
 		break;
 	case V4L2_PIX_FMT_YVYU:
+	case V4L2_PIX_FMT_YUYV:
+	case V4L2_PIX_FMT_VYUY:
+	case V4L2_PIX_FMT_UYVY:
 		pix->colorspace = V4L2_COLORSPACE_REC709;;
 		pix->bytesperline = pix->width * 2;
 		break;
@@ -559,16 +586,30 @@ static int axi_hdmi_rx_s_fmt_vid_cap(struct file *file, void *priv_fh,
 	if (axi_hdmi_rx_try_fmt_vid_cap(file, priv_fh, f))
 		return -EINVAL;
 
-	fmt.which = V4L2_SUBDEV_FORMAT_ACTIVE;
-	fmt.pad = ADV7611_PAD_SOURCE;
-	fmt.format.code = MEDIA_BUS_FMT_YUYV8_1X16;
-	ret = v4l2_subdev_call(s->subdev, pad, set_fmt, NULL, &fmt);
-	if (ret)
-		return ret;
-
 	s->width = pix->width;
 	s->height = pix->height;
 	s->stride = pix->bytesperline;
+
+	switch (pix->pixelformat) {
+	case V4L2_PIX_FMT_YVYU:
+		fmt.format.code = MEDIA_BUS_FMT_YVYU8_1X16;
+		break;
+	case V4L2_PIX_FMT_VYUY:
+		fmt.format.code = MEDIA_BUS_FMT_VYUY8_1X16;
+		break;
+	case V4L2_PIX_FMT_UYVY:
+		fmt.format.code = MEDIA_BUS_FMT_UYVY8_1X16;
+		break;
+	case V4L2_PIX_FMT_YUYV:
+		fmt.format.code = MEDIA_BUS_FMT_YUYV8_1X16;
+		break;
+	default:
+		if (hdmi_rx->bus_width >= 24)
+			fmt.format.code = MEDIA_BUS_FMT_RGB888_1X24;
+		else /* CSC expects this */
+			fmt.format.code = MEDIA_BUS_FMT_YUYV8_1X16;
+		break;
+	}
 
 	switch (pix->pixelformat) {
 	case V4L2_PIX_FMT_BGR32:
@@ -583,13 +624,22 @@ static int axi_hdmi_rx_s_fmt_vid_cap(struct file *file, void *priv_fh,
 	case V4L2_PIX_FMT_RGB24:
 		config = AXI_HDMI_RX_CONFIG_PACKED | AXI_HDMI_RX_CONFIG_BGR;
 		break;
+	case V4L2_PIX_FMT_YUYV:
 	case V4L2_PIX_FMT_YVYU:
+	case V4L2_PIX_FMT_UYVY:
+	case V4L2_PIX_FMT_VYUY:
 		config = AXI_HDMI_RX_CONFIG_CSC_BYPASS |
 		    AXI_HDMI_RX_CONFIG_PACKED;
 		break;
 	default:
 		return -EINVAL;
 	}
+
+	fmt.which = V4L2_SUBDEV_FORMAT_ACTIVE;
+	fmt.pad = ADV7611_PAD_SOURCE;
+	ret = v4l2_subdev_call(s->subdev, pad, set_fmt, NULL, &fmt);
+	if (ret)
+		return ret;
 
 	s->pixelformat = pix->pixelformat;
 
@@ -613,25 +663,19 @@ static int axi_hdmi_rx_enum_input(struct file *file, void *priv_fh,
 	case 0:
 		snprintf(inp->name, sizeof(inp->name), "HDMI-0");
 		break;
-	case 1:
-		snprintf(inp->name, sizeof(inp->name), "Generator-0");
-		break;
 	default:
 		return -EINVAL;
 	}
 
 	inp->type = V4L2_INPUT_TYPE_CAMERA;
 	inp->capabilities = V4L2_IN_CAP_DV_TIMINGS;
-	if (inp->index == 1)
-		return 0;
+
 	return v4l2_subdev_call(s->subdev, video, g_input_status, &inp->status);
 }
 
 static int axi_hdmi_rx_g_input(struct file *file, void *priv_fh, unsigned int *i)
 {
-	struct axi_hdmi_rx *hdmi_rx = video_drvdata(file);
-
-	*i = axi_hdmi_rx_read(hdmi_rx, AXI_HDMI_RX_REG_SRC_SEL);
+	*i = 0;
 	return 0;
 }
 
@@ -640,10 +684,8 @@ static int axi_hdmi_rx_s_input(struct file *file, void *priv_fh, unsigned int i)
 	struct axi_hdmi_rx *hdmi_rx = video_drvdata(file);
 	struct axi_hdmi_rx_stream *s = &hdmi_rx->stream;
 
-	if (i >= 2)
+	if (i != 0)
 		return -EINVAL;
-
-	axi_hdmi_rx_write(hdmi_rx, AXI_HDMI_RX_REG_SRC_SEL, i);
 
 	return v4l2_subdev_call(s->subdev, video, s_routing,
 		ADV76XX_PAD_HDMI_PORT_A, 0, 0);
@@ -747,16 +789,24 @@ static int axi_hdmi_rx_async_bound(struct v4l2_async_notifier *notifier,
 	struct v4l2_subdev *subdev, struct v4l2_async_subdev *asd)
 {
 	struct axi_hdmi_rx *hdmi_rx = notifier_to_axi_hdmi_rx(notifier);
+	struct v4l2_subdev_format fmt;
 	int ret;
 
 	struct v4l2_subdev_edid edid = {
 		.pad = 0,
 		.start_block = 0,
-		.blocks = 1,
+		.blocks = hdmi_rx->edid_blocks,
 		.edid = hdmi_rx->edid_data,
 	};
 
 	hdmi_rx->stream.subdev = subdev;
+
+	fmt.which = V4L2_SUBDEV_FORMAT_ACTIVE;
+	fmt.pad = ADV7611_PAD_SOURCE;
+	fmt.format.code = MEDIA_BUS_FMT_YUYV8_1X16;
+	ret = v4l2_subdev_call(subdev, pad, set_fmt, NULL, &fmt);
+	if (ret)
+		return ret;
 
 	ret = v4l2_subdev_call(subdev, video, s_routing, ADV76XX_PAD_HDMI_PORT_A,
 		0, 0);
@@ -796,6 +846,11 @@ static int axi_hdmi_rx_load_edid(struct platform_device *pdev,
 		return -EINVAL;
 	}
 
+	if (fw->size > 128)
+		hdmi_rx->edid_blocks = 2;
+	else
+		hdmi_rx->edid_blocks = 1;
+
 	memcpy(hdmi_rx->edid_data, fw->data, fw->size);
 
 	release_firmware(fw);
@@ -808,6 +863,7 @@ static int axi_hdmi_rx_probe(struct platform_device *pdev)
 	struct device_node *ep_node;
 	struct axi_hdmi_rx *hdmi_rx;
 	struct resource *res;
+	struct v4l2_of_endpoint bus_cfg;
 	int ret;
 
 	hdmi_rx = devm_kzalloc(&pdev->dev, sizeof(*hdmi_rx), GFP_KERNEL);
@@ -855,14 +911,20 @@ static int axi_hdmi_rx_probe(struct platform_device *pdev)
 		goto err_dma_cleanup_ctx;
 	}
 
-	ep_node = v4l2_of_get_next_endpoint(pdev->dev.of_node, NULL);
+	ep_node = of_graph_get_next_endpoint(pdev->dev.of_node, NULL);
 	if (!ep_node) {
 		ret = -EINVAL;
 		goto err_device_unregister;
 	}
+	bus_cfg.bus.parallel.bus_width = 0;
+	v4l2_of_parse_endpoint(ep_node, &bus_cfg);
+	if (bus_cfg.bus.parallel.bus_width)
+		hdmi_rx->bus_width = bus_cfg.bus.parallel.bus_width;
+	else
+		hdmi_rx->bus_width = 16;
 
 	hdmi_rx->asd.match_type = V4L2_ASYNC_MATCH_OF;
-	hdmi_rx->asd.match.of.node = v4l2_of_get_remote_port_parent(ep_node);
+	hdmi_rx->asd.match.of.node = of_graph_get_remote_port_parent(ep_node);
 
 	hdmi_rx->asds[0] = &hdmi_rx->asd;
 	hdmi_rx->notifier.subdevs = hdmi_rx->asds;
@@ -876,6 +938,9 @@ static int axi_hdmi_rx_probe(struct platform_device *pdev)
 		dev_err(&pdev->dev, "Error %d registering device nodes\n", ret);
 		goto err_device_unregister;
 	}
+
+	axi_hdmi_rx_write(hdmi_rx, AXI_HDMI_RX_REG_CONFIG,
+			AXI_HDMI_RX_CONFIG_EDGE_SEL);
 
 	return 0;
 

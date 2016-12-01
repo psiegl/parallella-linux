@@ -816,6 +816,30 @@ static struct cf_axi_dds_chip_info cf_axi_dds_chip_info_tbl[] = {
 		.num_dds_channels = 8,
 		.num_buf_channels = 4,
 	},
+	[ID_AD9152] = {
+		.name = "AD9152",
+		.channel = {
+			{
+				.type = IIO_TEMP,
+				.indexed = 1,
+				.channel = 0,
+				.scan_index = -1,
+				.info_mask_separate =
+					BIT(IIO_CHAN_INFO_PROCESSED) |
+					BIT(IIO_CHAN_INFO_CALIBBIAS),
+			},
+			CF_AXI_DDS_CHAN_BUF(0),
+			CF_AXI_DDS_CHAN_BUF(1),
+			CF_AXI_DDS_CHAN(0, 0, "1A"),
+			CF_AXI_DDS_CHAN(1, 0, "1B"),
+			CF_AXI_DDS_CHAN(2, 0, "2A"),
+			CF_AXI_DDS_CHAN(3, 0, "2B"),
+		},
+		.num_channels = 7,
+		.num_dp_disable_channels = 3,
+		.num_dds_channels = 4,
+		.num_buf_channels = 2,
+	},
 };
 
 static struct cf_axi_dds_chip_info cf_axi_dds_chip_info_ad9361 = {
@@ -942,7 +966,7 @@ static const struct axidds_core_info ad9361_1_00_a_info = {
 };
 
 static const struct axidds_core_info ad9361_6_00_a_info = {
-	.version = PCORE_VERSION(8, 0, 'a'),
+	.version = PCORE_VERSION(9, 0, 'a'),
 	.has_fifo_interface = true,
 	.standalone = true,
 	.rate = 3,
@@ -950,7 +974,7 @@ static const struct axidds_core_info ad9361_6_00_a_info = {
 };
 
 static const struct axidds_core_info ad9364_6_00_a_info = {
-	.version = PCORE_VERSION(8, 0, 'a'),
+	.version = PCORE_VERSION(9, 0, 'a'),
 	.has_fifo_interface = true,
 	.standalone = true,
 	.rate = 1,
@@ -958,7 +982,7 @@ static const struct axidds_core_info ad9364_6_00_a_info = {
 };
 
 static const struct axidds_core_info ad9361x2_6_00_a_info = {
-	.version = PCORE_VERSION(8, 0, 'a'),
+	.version = PCORE_VERSION(9, 0, 'a'),
 	.has_fifo_interface = true,
 	.standalone = true,
 	.rate = 3,
@@ -1018,6 +1042,8 @@ static int cf_axi_dds_probe(struct platform_device *pdev)
 	struct resource *res;
 	unsigned int ctrl_2;
 	unsigned int rate;
+	unsigned int drp_status;
+	int timeout = 100;
 	int ret;
 
 	id = of_match_device(cf_axi_dds_of_match, &pdev->dev);
@@ -1123,6 +1149,20 @@ static int cf_axi_dds_probe(struct platform_device *pdev)
 	indio_dev->info = &st->iio_info;
 
 	dds_write(st, ADI_REG_RSTN, 0x0);
+	if (PCORE_VERSION_MAJOR(st->version) > 7) {
+		dds_write(st, ADI_REG_RSTN, ADI_MMCM_RSTN);
+		do {
+			drp_status = dds_read(st, ADI_REG_DRP_STATUS);
+			if (drp_status & ADI_DRP_LOCKED)
+				break;
+			mdelay(1);
+		} while(timeout--);
+		if (timeout == -1) {
+			dev_err(&pdev->dev, "DRP unlocked.\n");
+			ret = -ETIMEDOUT;
+			goto err_converter_put;
+		}
+	}
 	dds_write(st, ADI_REG_RSTN, ADI_RSTN | ADI_MMCM_RSTN);
 
 	if (info)
@@ -1205,11 +1245,13 @@ static int cf_axi_dds_probe(struct platform_device *pdev)
 			}
 		}
 
-		ret = cf_axi_dds_configure_buffer(indio_dev);
-		if (ret)
-			goto err_converter_put;
+		if (of_find_property(np, "dmas", NULL)) {
+			ret = cf_axi_dds_configure_buffer(indio_dev);
+			if (ret)
+				goto err_converter_put;
 
-		indio_dev->available_scan_masks = st->chip_info->scan_masks;
+			indio_dev->available_scan_masks = st->chip_info->scan_masks;
+		}
 
 	} else if (dds_read(st, ADI_REG_ID)){
 		u32 regs[2];

@@ -353,7 +353,7 @@ static struct v4l2_rect s5k5baf_cis_rect = {
  *
  */
 static int s5k5baf_fw_parse(struct device *dev, struct s5k5baf_fw **fw,
-			    size_t count, const u16 *data)
+			    size_t count, const __le16 *data)
 {
 	struct s5k5baf_fw *f;
 	u16 *d, i, *end;
@@ -374,6 +374,8 @@ static int s5k5baf_fw_parse(struct device *dev, struct s5k5baf_fw **fw,
 	count -= S5K5BAG_FW_TAG_LEN;
 
 	d = devm_kzalloc(dev, count * sizeof(u16), GFP_KERNEL);
+	if (!d)
+		return -ENOMEM;
 
 	for (i = 0; i < count; ++i)
 		d[i] = le16_to_cpu(data[i]);
@@ -406,7 +408,7 @@ static inline struct v4l2_subdev *ctrl_to_sd(struct v4l2_ctrl *ctrl)
 
 static inline bool s5k5baf_is_cis_subdev(struct v4l2_subdev *sd)
 {
-	return sd->entity.type == MEDIA_ENT_T_V4L2_SUBDEV_SENSOR;
+	return sd->entity.function == MEDIA_ENT_F_CAM_SENSOR;
 }
 
 static inline struct s5k5baf *to_s5k5baf(struct v4l2_subdev *sd)
@@ -421,6 +423,7 @@ static u16 s5k5baf_i2c_read(struct s5k5baf *state, u16 addr)
 {
 	struct i2c_client *c = v4l2_get_subdevdata(&state->sd);
 	__be16 w, r;
+	u16 res;
 	struct i2c_msg msg[] = {
 		{ .addr = c->addr, .flags = 0,
 		  .len = 2, .buf = (u8 *)&w },
@@ -434,15 +437,15 @@ static u16 s5k5baf_i2c_read(struct s5k5baf *state, u16 addr)
 
 	w = cpu_to_be16(addr);
 	ret = i2c_transfer(c->adapter, msg, 2);
-	r = be16_to_cpu(r);
+	res = be16_to_cpu(r);
 
-	v4l2_dbg(3, debug, c, "i2c_read: 0x%04x : 0x%04x\n", addr, r);
+	v4l2_dbg(3, debug, c, "i2c_read: 0x%04x : 0x%04x\n", addr, res);
 
 	if (ret != 2) {
 		v4l2_err(c, "i2c_read: error during transfer (%d)\n", ret);
 		state->error = ret;
 	}
-	return r;
+	return res;
 }
 
 static void s5k5baf_i2c_write(struct s5k5baf *state, u16 addr, u16 val)
@@ -488,7 +491,7 @@ static void s5k5baf_write_arr_seq(struct s5k5baf *state, u16 addr,
 	v4l2_dbg(3, debug, c, "i2c_write_seq(count=%d): %*ph\n", count,
 		 min(2 * count, 64), seq);
 
-	buf[0] = __constant_cpu_to_be16(REG_CMD_BUF);
+	buf[0] = cpu_to_be16(REG_CMD_BUF);
 
 	while (count > 0) {
 		int n = min_t(int, count, ARRAY_SIZE(buf) - 1);
@@ -1037,7 +1040,7 @@ static int s5k5baf_load_setfile(struct s5k5baf *state)
 	}
 
 	ret = s5k5baf_fw_parse(&c->dev, &state->fw, fw->size / 2,
-			       (u16 *)fw->data);
+			       (__le16 *)fw->data);
 
 	release_firmware(fw);
 
@@ -1051,7 +1054,7 @@ static int s5k5baf_set_power(struct v4l2_subdev *sd, int on)
 
 	mutex_lock(&state->lock);
 
-	if (!on != state->power)
+	if (state->power != !on)
 		goto out;
 
 	if (on) {
@@ -1753,7 +1756,7 @@ static int s5k5baf_registered(struct v4l2_subdev *sd)
 		v4l2_err(sd, "failed to register subdev %s\n",
 			 state->cis_sd.name);
 	else
-		ret = media_entity_create_link(&state->cis_sd.entity, PAD_CIS,
+		ret = media_create_pad_link(&state->cis_sd.entity, PAD_CIS,
 					       &state->sd.entity, PAD_CIS,
 					       MEDIA_LNK_FL_IMMUTABLE |
 					       MEDIA_LNK_FL_ENABLED);
@@ -1793,7 +1796,7 @@ static const struct v4l2_subdev_ops s5k5baf_subdev_ops = {
 
 static int s5k5baf_configure_gpios(struct s5k5baf *state)
 {
-	static const char const *name[] = { "S5K5BAF_STBY", "S5K5BAF_RST" };
+	static const char * const name[] = { "S5K5BAF_STBY", "S5K5BAF_RST" };
 	struct i2c_client *c = v4l2_get_subdevdata(&state->sd);
 	struct s5k5baf_gpio *g = state->gpios;
 	int ret, i;
@@ -1865,8 +1868,11 @@ static int s5k5baf_parse_device_node(struct s5k5baf *state, struct device *dev)
 		return -EINVAL;
 	}
 
-	v4l2_of_parse_endpoint(node_ep, &ep);
+	ret = v4l2_of_parse_endpoint(node_ep, &ep);
 	of_node_put(node_ep);
+	if (ret)
+		return ret;
+
 	state->bus_type = ep.bus_type;
 
 	switch (state->bus_type) {
@@ -1901,8 +1907,8 @@ static int s5k5baf_configure_subdevs(struct s5k5baf *state,
 	sd->flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
 
 	state->cis_pad.flags = MEDIA_PAD_FL_SOURCE;
-	sd->entity.type = MEDIA_ENT_T_V4L2_SUBDEV_SENSOR;
-	ret = media_entity_init(&sd->entity, NUM_CIS_PADS, &state->cis_pad, 0);
+	sd->entity.function = MEDIA_ENT_F_CAM_SENSOR;
+	ret = media_entity_pads_init(&sd->entity, NUM_CIS_PADS, &state->cis_pad);
 	if (ret < 0)
 		goto err;
 
@@ -1916,8 +1922,8 @@ static int s5k5baf_configure_subdevs(struct s5k5baf *state,
 
 	state->pads[PAD_CIS].flags = MEDIA_PAD_FL_SINK;
 	state->pads[PAD_OUT].flags = MEDIA_PAD_FL_SOURCE;
-	sd->entity.type = MEDIA_ENT_T_V4L2_SUBDEV;
-	ret = media_entity_init(&sd->entity, NUM_ISP_PADS, state->pads, 0);
+	sd->entity.function = MEDIA_ENT_F_V4L2_SUBDEV_UNKNOWN;
+	ret = media_entity_pads_init(&sd->entity, NUM_ISP_PADS, state->pads);
 
 	if (!ret)
 		return 0;

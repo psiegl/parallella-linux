@@ -214,7 +214,6 @@ config AKEBONO
 	select ETHERNET
 	select NET_VENDOR_IBM
 	select IBM_EMAC_EMAC4
-	select IBM_EMAC_RGMII_WOL
 	select USB if USB_SUPPORT
 	select USB_OHCI_HCD_PLATFORM if USB_OHCI_HCD
 	select USB_EHCI_HCD_PLATFORM if USB_EHCI_HCD
@@ -277,15 +276,6 @@ config PPC4xx_GPIO
 	select ARCH_REQUIRE_GPIOLIB
 	help
 	  Enable gpiolib support for ppc440 based boards
-
-config XILINX_PPC_FPU
-	depends on XILINX_VIRTEX_5_FXT
-	bool "Enable Xilinx Soft FPU"
-	select PPC_FPU
-	default n
-	help
-	  This option enables the Xilinx Soft FPU attached to the APU
-	  interface of the PPC440 (requires DP_FULL FPU pcore).
 
 config PPC4xx_OCM
 	bool "PPC4xx On Chip Memory (OCM) support"

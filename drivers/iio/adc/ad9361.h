@@ -2779,13 +2779,20 @@
 #define MAX_LPF_GAIN			24
 #define MAX_DIG_GAIN			31
 
-#define MAX_BBPLL_FREF			70000000UL /* 70 MHz */
-#define MIN_BBPLL_FREQ			715000000UL /* 715 MHz */
-#define MAX_BBPLL_FREQ			1430000000UL /* 1430 MHz */
+#define MAX_BBPLL_FREF			70007000UL /* 70 MHz + 100ppm */
+#define MIN_BBPLL_FREQ			714928500UL /* 715 MHz - 100ppm */
+#define MAX_BBPLL_FREQ			1430143000UL /* 1430 MHz + 100ppm */
 #define MAX_BBPLL_DIV			64
 #define MIN_BBPLL_DIV			2
 
-#define MIN_ADC_CLK			(MIN_BBPLL_FREQ / MAX_BBPLL_DIV) /* 11.17MHz */
+/*
+ * The ADC minimum and maximum operating output data rates
+ * are 25MHz and 640MHz respectively.
+ * For more information see here: https://ez.analog.com/docs/DOC-12763
+ */
+
+#define MIN_ADC_CLK			25000000UL /* 25 MHz */
+//#define MIN_ADC_CLK			(MIN_BBPLL_FREQ / MAX_BBPLL_DIV) /* 11.17MHz */
 #define MAX_ADC_CLK			640000000UL /* 640 MHz */
 #define MAX_DAC_CLK			(MAX_ADC_CLK / 2)
 
@@ -2794,11 +2801,18 @@
 #define RFPLL_MODULUS			8388593UL
 #define BBPLL_MODULUS			2088960UL
 
-#define MAX_SYNTH_FREF			80000000UL /* 80 MHz */
-#define MIN_SYNTH_FREF			10000000UL /* 10 MHz */
+#define MAX_SYNTH_FREF			80008000UL /* 80 MHz + 100ppm */
+#define MIN_SYNTH_FREF			9999000UL /* 10 MHz - 100ppm */
 #define MIN_VCO_FREQ_HZ			6000000000ULL
+
 #define MAX_CARRIER_FREQ_HZ		6000000000ULL
 #define MIN_CARRIER_FREQ_HZ		70000000ULL
+
+#define AD9363A_MAX_CARRIER_FREQ_HZ	3800000000ULL
+#define AD9363A_MIN_CARRIER_FREQ_HZ	325000000ULL
+
+#define MAX_GAIN_TABLE_SIZE		90
+#define MAX_NUM_GAIN_TABLES		16 /* randomly picked */
 
 /*
  *	Driver
@@ -3020,6 +3034,8 @@ struct auxadc_control {
 };
 
 struct gpo_control {
+	u32 gpo_manual_mode_enable_mask;
+	bool gpo_manual_mode_en;
 	bool gpo0_inactive_state_high_en;
 	bool gpo1_inactive_state_high_en;
 	bool gpo2_inactive_state_high_en;
@@ -3095,7 +3111,6 @@ struct ad9361_phy_platform_data {
 	bool			ensm_pin_pulse_mode;
 	bool			ensm_pin_ctrl;
 	bool			debug_mode;
-	bool			tdd_use_fdd_tables;
 	bool			tdd_use_dual_synth;
 	bool			tdd_skip_vco_cal;
 	bool			use_ext_rx_lo;
@@ -3113,6 +3128,8 @@ struct ad9361_phy_platform_data {
 	u32			dcxo_fine;
 	u32			rf_rx_input_sel;
 	u32			rf_tx_output_sel;
+	u32			rx1tx1_mode_use_rx_num;
+	u32			rx1tx1_mode_use_tx_num;
 	unsigned long		rx_path_clks[NUM_RX_CLOCKS];
 	unsigned long		tx_path_clks[NUM_TX_CLOCKS];
 	u32			trx_synth_max_fref;
@@ -3130,6 +3147,9 @@ struct ad9361_phy_platform_data {
 
 	struct gain_control	gain_ctrl;
 	struct rssi_control	rssi_ctrl;
+	u32	   rssi_lna_err_tbl[4];
+	u32	   rssi_mixer_err_tbl[15];
+	bool   rssi_skip_err_tbl;
 	struct port_control	port_ctrl;
 	struct ctrl_outs_control	ctrl_outs_ctrl;
 	struct elna_control	elna_ctrl;
@@ -3249,6 +3269,7 @@ enum {
 	ID_AD9361,
 	ID_AD9364,
 	ID_AD9361_2,
+	ID_AD9363A,
 };
 
 struct ad9361_rf_phy;
@@ -3295,24 +3316,34 @@ struct ad9361_rf_phy {
 	struct refclk_scale	clk_priv[NUM_AD9361_CLKS];
 	struct clk_onecell_data	clk_data;
 	struct ad9361_phy_platform_data *pdata;
-	struct ad9361_debugfs_entry debugfs_entry[173];
+	struct ad9361_debugfs_entry debugfs_entry[177];
 	struct bin_attribute 	bin;
+	struct bin_attribute 	bin_gt;
 	struct iio_dev 		*indio_dev;
 	struct work_struct 	work;
 	struct completion       complete;
+	struct gain_table_info  *gt_info;
+	char			*bin_attr_buf;
 	u32 			ad9361_debugfs_entry_index;
 	u8 			prev_ensm_state;
 	u8			curr_ensm_state;
 	u8			cached_rx_rfpll_div;
 	u8			cached_tx_rfpll_div;
-	struct rx_gain_info rx_gain[RXGAIN_TBLS_END];
-	enum rx_gain_table_name current_table;
+	int			tx_quad_lpf_tia_match;
+	int			current_table;
+
 	bool 			ensm_pin_ctl_en;
 
 	bool			auto_cal_en;
 	bool 			manual_tx_quad_cal_en;
 	u64			last_tx_quad_cal_freq;
 	u32			last_tx_quad_cal_phase;
+	u64			current_tx_lo_freq;
+	u64			current_rx_lo_freq;
+	bool			current_tx_use_tdd_table;
+	bool			current_rx_use_tdd_table;
+	unsigned long		current_rx_path_clks[NUM_RX_CLOCKS];
+	unsigned long		current_tx_path_clks[NUM_TX_CLOCKS];
 	unsigned long		flags;
 	unsigned long		cal_threshold_freq;
 	u32			current_rx_bw_Hz;
@@ -3338,6 +3369,9 @@ struct ad9361_rf_phy {
 	bool			txmon_tdd_en;
 	u16 			auxdac1_value;
 	u16 			auxdac2_value;
+	u32			tx1_atten_cached;
+	u32			tx2_atten_cached;
+
 	struct ad9361_fastlock	fastlock;
 };
 
@@ -3362,7 +3396,7 @@ int ad9361_set_trx_clock_chain(struct ad9361_rf_phy *phy,
 				      unsigned long *tx_path_clks);
 int ad9361_dig_tune(struct ad9361_rf_phy *phy, unsigned long max_freq,
 			   enum dig_tune_flags flags);
-
+int ad9361_tx_mute(struct ad9361_rf_phy *phy, u32 state);
 
 #endif
 
