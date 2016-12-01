@@ -40,7 +40,7 @@
 
 &fpga {
 	axi_vdma: axi-vdma@43000000 {
-		compatible = "xlnx,axi-vdma-1.00.a";
+		compatible = "xlnx,axi-vdma-1.00.a", "xlnx,axi-vdma";
 		reg = <0x43000000 0x1000>;
 		#dma-cells = <1>;
 		#address-cells = <1>;
