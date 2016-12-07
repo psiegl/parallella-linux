@@ -290,6 +290,16 @@ static void cdns_uart_handle_rx(void *dev_id, unsigned int isrstatus)
 	is_rxbs_support = cdns_uart->quirks & CDNS_UART_RXBS_SUPPORT;
 	is_no_rx_pullup = cdns_uart->quirks & CDNS_UART_NO_RX_PULLUP;
 
+	/* Floating RX pin already detected, but RX interrupts enabled
+	 * elsewhere in driver.
+	 */
+	if (cdns_uart->rx_disabled) {
+		WARN_ON(!is_no_rx_pullup);
+
+		cdns_uart_rx_disable_permanently(port);
+		return;
+	}
+
 	while ((cdns_uart_readl(CDNS_UART_SR_OFFSET) &
 		CDNS_UART_SR_RXEMPTY) != CDNS_UART_SR_RXEMPTY) {
 		if (is_rxbs_support)
