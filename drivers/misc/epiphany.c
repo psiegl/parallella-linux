@@ -958,7 +958,7 @@ static void epiphany_vm_unfreeze(void)
 static int epiphany_reset(void)
 {
 	struct elink_device *elink;
-	int err, retval = 0;
+	int err;
 
 	/* Unsafe to manipulate power if already in use. At any rate we should
 	 * not call regulator_enable() again since that would screw up the
@@ -967,18 +967,15 @@ static int epiphany_reset(void)
 		list_for_each_entry(elink, &epiphany.elink_list, list) {
 			if (elink_regulator_enable(elink)) {
 				/* Not much else we can do? */
-				retval = -EIO;
-				goto out;
+				return -EIO;
 			}
 		}
 	}
 
 	list_for_each_entry(elink, &epiphany.elink_list, list) {
 		err = elink_reset(elink);
-		if (err) {
-			retval = -EIO;
-			goto out;
-		}
+		if (err)
+			return -EIO;
 	}
 
 	list_for_each_entry(elink, &epiphany.elink_list, list) {
@@ -989,8 +986,7 @@ static int epiphany_reset(void)
 						  elink->connection.array);
 	}
 
-out:
-	return retval;
+	return 0;
 }
 
 /* caller must hold epiphany.driver_lock */
