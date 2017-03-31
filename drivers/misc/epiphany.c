@@ -978,6 +978,9 @@ static int epiphany_reset(void)
 			return -EIO;
 	}
 
+	if (epiphany.param_nopm)
+		return 0;
+
 	list_for_each_entry(elink, &epiphany.elink_list, list) {
 		if (elink->connection.type != E_CONN_ARRAY)
 			continue;
