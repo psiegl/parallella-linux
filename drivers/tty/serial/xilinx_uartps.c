@@ -152,10 +152,7 @@ MODULE_PARM_DESC(rx_timeout, "Rx timeout, 1-255");
 /* Goes in read_status_mask for break detection as the HW doesn't do it*/
 #define CDNS_UART_IXR_BRK	0x00002000
 
-/* Quirks */
 #define CDNS_UART_RXBS_SUPPORT BIT(1)
-#define CDNS_UART_NO_RX_PULLUP BIT(2)
-
 /*
  * Modem Control register:
  * The read/write Modem Control register controls the interface with the modem
@@ -198,7 +195,6 @@ struct cdns_uart {
 	unsigned int		baud;
 	struct notifier_block	clk_rate_change_nb;
 	u32			quirks;
-	bool			rx_disabled;
 };
 struct cdns_platform_data {
 	u32 quirks;
@@ -220,23 +216,10 @@ static void cdns_uart_handle_rx(void *dev_id, unsigned int isrstatus)
 	unsigned int rxbs_status = 0;
 	unsigned int status_mask;
 	unsigned int framerrprocessed = 0;
-	unsigned int reads = 0;
 	char status = TTY_NORMAL;
 	bool is_rxbs_support;
-	bool is_no_rx_pullup;
 
 	is_rxbs_support = cdns_uart->quirks & CDNS_UART_RXBS_SUPPORT;
-	is_no_rx_pullup = cdns_uart->quirks & CDNS_UART_NO_RX_PULLUP;
-
-	/* Floating RX pin already detected, but RX interrupts enabled
-	 * elsewhere in driver.
-	 */
-	if (cdns_uart->rx_disabled) {
-		WARN_ON(!is_no_rx_pullup);
-
-		cdns_uart_rx_disable_permanently(port);
-		return;
-	}
 
 	while ((readl(port->membase + CDNS_UART_SR) &
 		CDNS_UART_SR_RXEMPTY) != CDNS_UART_SR_RXEMPTY) {
@@ -244,13 +227,6 @@ static void cdns_uart_handle_rx(void *dev_id, unsigned int isrstatus)
 			rxbs_status = readl(port->membase + CDNS_UART_RXBS);
 		data = readl(port->membase + CDNS_UART_FIFO);
 		port->icount.rx++;
-
-		reads++;
-		if (is_no_rx_pullup && reads > RX_FLOAT_DETECT_THRESH) {
-			cdns_uart_rx_disable_permanently(port);
-			break;
-		}
-
 		/*
 		 * There is no hardware break detection in Zynq, so we interpret
 		 * framing error with all-zeros data as a break sequence.
@@ -491,30 +467,6 @@ static unsigned int cdns_uart_set_baud_rate(struct uart_port *port,
 	cdns_uart->baud = baud;
 
 	return calc_baud;
-}
-
-/**
- * cdns_uart_rxtx_enable - Enable transmitter and receiver by clearing disable
- * bits and setting enable bits for RX and TX.
- * @port: Handle to the uart port structure
- */
-static void cdns_uart_rxtx_enable(struct uart_port *port)
-{
-	struct cdns_uart *cdns_uart = port->private_data;
-	u32 ctrl_reg;
-
-	/*
-	 * Clear the RX disable and TX disable bits and then set the TX enable
-	 * bit and RX enable bit to enable the transmitter and receiver.
-	 */
-	ctrl_reg = cdns_uart_readl(CDNS_UART_CR_OFFSET);
-	ctrl_reg &= ~CDNS_UART_CR_TX_DIS;
-	ctrl_reg |= CDNS_UART_CR_TX_EN;
-	ctrl_reg &= cdns_uart->rx_disabled ?
-		~CDNS_UART_CR_RX_EN : ~CDNS_UART_CR_RX_DIS;
-	ctrl_reg |= cdns_uart->rx_disabled ?
-		CDNS_UART_CR_RX_DIS : CDNS_UART_CR_RX_EN;
-	cdns_uart_writel(ctrl_reg, CDNS_UART_CR_OFFSET);
 }
 
 #ifdef CONFIG_COMMON_CLK
@@ -1358,11 +1310,9 @@ static struct uart_driver cdns_uart_uart_driver = {
 static int cdns_uart_suspend(struct device *device)
 {
 	struct uart_port *port = dev_get_drvdata(device);
-	struct cdns_uart *cdns_uart = port->private_data;
 	struct tty_struct *tty;
 	struct device *tty_dev;
 	int may_wake = 0;
-	bool is_no_rx_pullup = cdns_uart->quirks & CDNS_UART_NO_RX_PULLUP;
 
 	/* Get the tty which could be NULL so don't assume it's valid */
 	tty = tty_port_tty_get(&port->state->port);
@@ -1379,7 +1329,6 @@ static int cdns_uart_suspend(struct device *device)
 	uart_suspend_port(&cdns_uart_uart_driver, port);
 	if (!(console_suspend_enabled && !may_wake)) {
 		unsigned long flags = 0;
-		unsigned reads = 0;
 
 		spin_lock_irqsave(&port->lock, flags);
 		/* Empty the receive FIFO 1st before making changes */
@@ -1524,9 +1473,6 @@ static int cdns_uart_probe(struct platform_device *pdev)
 
 		cdns_uart_data->quirks = data->quirks;
 	}
-
-	if (of_property_read_bool(pdev->dev.of_node, "cdns,rx-no-pullup"))
-		cdns_uart_data->quirks |= CDNS_UART_NO_RX_PULLUP;
 
 	cdns_uart_data->pclk = devm_clk_get(&pdev->dev, "pclk");
 	if (IS_ERR(cdns_uart_data->pclk)) {
