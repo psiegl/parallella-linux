@@ -1,4 +1,4 @@
-#include "zynq-picozed-sdr2-fmc.dts"
+#include "zynq-adrv9361-z7035-fmc.dts"
 
 &adc0_ad9361 {
 	/delete-property/ adi,frequency-division-duplex-mode-enable;
@@ -27,5 +27,14 @@
 		reg = <0x79028000 0x1000>;
 		adi,profile-config0 = <0 1228800 1 1198080 771920 771920 1198080 39832 771536 781032 1197696 44832 766536 786032 1192696>; // Master
 		adi,profile-config1 = <0 1228800 0 771920 1198080 1198080 771920 781032 1197696 39832 771536 786032 1192696 44832 766536>; // Slave
+	};
+};
+
+&gpio0 {
+	rf_gpio_0 {
+		gpio-hog;
+		gpios = <110 0>;
+		output-high;
+		line-name = "RF_GPIO0 PA ON";
 	};
 };

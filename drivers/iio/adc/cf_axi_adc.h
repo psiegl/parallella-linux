@@ -97,6 +97,8 @@
 #define ADI_USR_CHANMAX(x)		(((x) & 0xFF) << 0)
 #define ADI_TO_USR_CHANMAX(x)		(((x) >> 0) & 0xFF)
 
+#define ADI_REG_GP_CONTROL		0x00BC
+
 /* ADC CHANNEL */
 
 #define ADI_REG_CHAN_CNTRL(c)		(0x0400 + (c) * 0x40)
@@ -339,6 +341,7 @@ enum adc_data_sel {
 #define AXIADC_MAX_CHANNEL		16
 
 #include <linux/spi/spi.h>
+#include <linux/clk/clkscale.h>
 
 enum {
 	ID_AD9467,
@@ -371,6 +374,7 @@ struct axiadc_chip_info {
 struct axiadc_state {
 	struct device 			*dev_spi;
 	struct iio_info			iio_info;
+	struct clk 			*clk;
 	void __iomem			*regs;
 	void __iomem			*slave_regs;
 	unsigned				max_usr_channel;
@@ -378,20 +382,23 @@ struct axiadc_state {
 	unsigned			max_count;
 	unsigned			id;
 	unsigned			pcore_version;
+	unsigned			decimation_factor;
 	bool				has_fifo_interface;
-	bool			dp_disable;
-	unsigned long 		adc_clk;
+	bool				dp_disable;
+	unsigned long long		adc_clk;
+
 	bool				streaming_dma;
 	unsigned			have_slave_channels;
 
-	struct iio_hw_consumer	*frontend;
+	struct iio_hw_consumer		*frontend;
 
-	struct iio_chan_spec	channels[AXIADC_MAX_CHANNEL];
+	struct iio_chan_spec		channels[AXIADC_MAX_CHANNEL];
 };
 
 struct axiadc_converter {
 	struct spi_device 	*spi;
 	struct clk 		*clk;
+	struct clock_scale		adc_clkscale;
 	void 			*phy;
 	struct gpio_desc		*pwrdown_gpio;
 	struct gpio_desc		*reset_gpio;
@@ -401,6 +408,9 @@ struct axiadc_converter {
 	unsigned			scratch_reg[AXIADC_MAX_CHANNEL];
 	unsigned long 		adc_clk;
 	const struct axiadc_chip_info	*chip_info;
+
+	bool			sample_rate_read_only;
+
 	int		(*read)(struct spi_device *spi, unsigned reg);
 	int		(*write)(struct spi_device *spi,
 				 unsigned reg, unsigned val);

@@ -211,6 +211,9 @@ static DEVICE_ATTR(reg_access, S_IWUSR | S_IRUSR, jesd204b_reg_read, jesd204b_re
 static unsigned long jesd204b_clk_recalc_rate(struct clk_hw *hw,
 		unsigned long parent_rate)
 {
+	to_clk_priv(hw)->rate = parent_rate;
+	to_clk_priv(hw)->st->rate = parent_rate;
+
 	return parent_rate;
 }
 
@@ -399,7 +402,7 @@ static int jesd204b_probe(struct platform_device *pdev)
 
 	init.name = clk_name;
 	init.ops = &clkout_ops;
-	init.flags = 0;
+	init.flags = CLK_SET_RATE_PARENT;
 
 	parent_name = of_clk_get_parent_name(pdev->dev.of_node, 0);
 	init.parent_names = &parent_name;
