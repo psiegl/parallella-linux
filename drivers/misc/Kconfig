@@ -786,7 +786,6 @@ config XILINX_TRAFGEN
 
 	  If unsure, say N
 
-<<<<<<< HEAD
 config EPIPHANY
 	tristate "Adapteva Epiphany device driver"
 	depends on OF
@@ -802,13 +801,12 @@ config EPIPHANY
 	  module will be called epiphany.
 
 	  If unsure, say N.
-=======
+
 config XILINX_VCU
        tristate "Xilinx VCU Init"
        default n
        help
           Driver for the Xilinx VCU Init based on the logicoreIP.
->>>>>>> upstream/2017_R1
 
 source "drivers/misc/jesd204b/Kconfig"
 source "drivers/misc/c2port/Kconfig"

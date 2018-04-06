@@ -200,42 +200,7 @@ static ssize_t jesd204b_reg_read(struct device *dev,
 
 static DEVICE_ATTR(reg_access, S_IWUSR | S_IRUSR, jesd204b_reg_read, jesd204b_reg_write);
 
-<<<<<<< HEAD:drivers/iio/adc/cf_axi_jesd204b_v51.c
-static unsigned long jesd204b_clk_recalc_rate(struct clk_hw *hw,
-		unsigned long parent_rate)
-{
-	to_clk_priv(hw)->rate = parent_rate;
-	to_clk_priv(hw)->st->rate = parent_rate;
-
-	return parent_rate;
-}
-
-static int jesd204b_clk_enable(struct clk_hw *hw)
-{
-	to_clk_priv(hw)->enabled = true;
-
-	return 0;
-}
-
-static void jesd204b_clk_disable(struct clk_hw *hw)
-{
-	to_clk_priv(hw)->enabled = false;
-}
-
-static int jesd204b_clk_is_enabled(struct clk_hw *hw)
-{
-	return to_clk_priv(hw)->enabled;
-}
-
-static const struct clk_ops clkout_ops = {
-	.recalc_rate = jesd204b_clk_recalc_rate,
-	.enable = jesd204b_clk_enable,
-	.disable = jesd204b_clk_disable,
-	.is_enabled = jesd204b_clk_is_enabled,
-};
-=======
 static const struct clk_ops clkout_ops = {};
->>>>>>> upstream/2017_R1:drivers/iio/jesd204/axi_jesd204b_v51.c
 
 /* Match table for of_platform binding */
 static const struct of_device_id jesd204b_of_match[] = {
