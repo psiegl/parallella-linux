@@ -1,7 +1,7 @@
 /*
  * ADF5355 SPI Wideband Synthesizer driver
  *
- * Copyright 2015 Analog Devices Inc.
+ * Copyright 2015-2018 Analog Devices Inc.
  *
  * Licensed under the GPL-2.
  */
@@ -72,7 +72,7 @@
 #define ADF5355_REG5_DEFAULT			0x00800025
 
 /* REG6 Bit Definitions */
-#define ADF4355_REG6_OUTPUTB_PWR(x)		(((x) & 0x7) << 4)
+#define ADF4355_REG6_OUTPUTB_PWR(x)		(((x) & 0x3) << 7)
 #define ADF4355_REG6_RF_OUTB_EN(x)		((x) << 9)
 #define ADF5355_REG6_OUTPUT_PWR(x)		(((x) & 0x3) << 4)
 #define ADF5355_REG6_RF_OUT_EN(x)		((x) << 6)
@@ -472,7 +472,7 @@ static int adf5355_set_freq(struct adf5355_state *st, unsigned long long freq,
 		ADF5355_REG6_OUTPUT_PWR(pdata->outa_power) |
 		ADF5355_REG6_RF_OUT_EN(pdata->outa_en) |
 		(st->is_5355 ? ADF5355_REG6_RF_OUTB_EN(pdata->outb_en) :
-			ADF4355_REG6_OUTPUTB_PWR(pdata->outa_power) |
+			ADF4355_REG6_OUTPUTB_PWR(pdata->outb_power) |
 			ADF4355_REG6_RF_OUTB_EN(pdata->outb_en)) |
 		ADF5355_REG6_MUTE_TILL_LOCK_EN(pdata->mute_till_lock_detect_en) |
 		ADF5355_REG6_CP_BLEED_CURR(cp_bleed) |
@@ -678,10 +678,8 @@ static struct adf5355_platform_data *adf5355_parse_dt(struct device *dev)
 	int ret;
 
 	pdata = devm_kzalloc(dev, sizeof(*pdata), GFP_KERNEL);
-	if (!pdata) {
-		dev_err(dev, "could not allocate memory for platform data\n");
+	if (!pdata)
 		return NULL;
-	}
 
 	strncpy(&pdata->name[0], np->name, SPI_NAME_SIZE - 1);
 
@@ -924,7 +922,6 @@ static int adf5355_probe(struct spi_device *spi)
 
 		clk_priv = devm_kzalloc(&spi->dev, sizeof(*clk_priv), GFP_KERNEL);
 		if (!clk_priv) {
-			dev_err(&spi->dev, "%s: could not allocate fixed factor clk\n", __func__);
 			ret = -ENOMEM;
 			goto error_disable_reg;
 		}

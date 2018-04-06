@@ -10,9 +10,10 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  */
-/include/ "skeleton.dtsi"
 
 / {
+	#address-cells = <1>;
+	#size-cells = <1>;
 	compatible = "xlnx,zynq-7000";
 
 	cpus {
@@ -41,14 +42,22 @@
 		};
 	};
 
-	pmu {
+	fpga_full: fpga-full {
+		compatible = "fpga-region";
+		fpga-mgr = <&devcfg>;
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+	};
+
+	pmu@f8891000 {
 		compatible = "arm,cortex-a9-pmu";
 		interrupts = <0 5 4>, <0 6 4>;
 		interrupt-parent = <&intc>;
 		reg = < 0xf8891000 0x1000 0xf8893000 0x1000 >;
 	};
 
-	regulator_vccpint: fixedregulator@0 {
+	regulator_vccpint: fixedregulator {
 		compatible = "regulator-fixed";
 		regulator-name = "VCCPINT";
 		regulator-min-microvolt = <1000000>;
@@ -58,6 +67,7 @@
 	};
 
 	amba: amba {
+		u-boot,dm-pre-reloc;
 		compatible = "simple-bus";
 		#address-cells = <1>;
 		#size-cells = <1>;
@@ -271,6 +281,7 @@
 			interrupt-parent = <&intc>;
 			interrupts = <0 24 4>;
 			reg = <0xe0100000 0x1000>;
+			broken-adma2;
 		};
 
 		sdhci1: sdhci@e0101000 {
@@ -281,6 +292,7 @@
 			interrupt-parent = <&intc>;
 			interrupts = <0 47 4>;
 			reg = <0xe0101000 0x1000>;
+			broken-adma2;
 		};
 
 		slcr: slcr@f8000000 {
@@ -347,6 +359,11 @@
 			clocks = <&clkc 12>, <&clkc 15>, <&clkc 16>, <&clkc 17>, <&clkc 18>;
 			clock-names = "ref_clk", "fclk0", "fclk1", "fclk2", "fclk3";
 			syscon = <&slcr>;
+		};
+
+		efuse: efuse@f800d000 {
+			compatible = "xlnx,zynq-efuse";
+			reg = <0xf800d000 0x20>;
 		};
 
 		global_timer: timer@f8f00200 {

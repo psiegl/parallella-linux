@@ -66,6 +66,7 @@
 #define AXI_DMAC_REG_CURRENT_DEST_ADDR	0x438
 #define AXI_DMAC_REG_DBG0		0x43c
 #define AXI_DMAC_REG_DBG1		0x440
+#define AXI_DMAC_REG_DBG2		0x444
 
 #define AXI_DMAC_CTRL_ENABLE		BIT(0)
 #define AXI_DMAC_CTRL_PAUSE		BIT(1)
@@ -345,7 +346,7 @@ static irqreturn_t axi_dmac_interrupt_handler(int irq, void *devid)
 {
 	struct axi_dmac *dmac = devid;
 	unsigned int pending;
-	bool start_next;
+	bool start_next = false;
 
 	pending = axi_dmac_read(dmac, AXI_DMAC_REG_IRQ_PENDING);
 	if (!pending)
@@ -645,6 +646,7 @@ static bool axi_dmac_regmap_rdwr(struct device *dev, unsigned int reg)
 	case AXI_DMAC_REG_CURRENT_DEST_ADDR:
 	case AXI_DMAC_REG_DBG0:
 	case AXI_DMAC_REG_DBG1:
+	case AXI_DMAC_REG_DBG2:
 		return true;
 	default:
 		return false;
@@ -655,7 +657,7 @@ static const struct regmap_config axi_dmac_regmap_config = {
 	.reg_bits = 32,
 	.val_bits = 32,
 	.reg_stride = 4,
-	.max_register = AXI_DMAC_REG_DBG1,
+	.max_register = AXI_DMAC_REG_DBG2,
 	.readable_reg = axi_dmac_regmap_rdwr,
 	.writeable_reg = axi_dmac_regmap_rdwr,
 };
@@ -703,15 +705,6 @@ static int axi_dmac_parse_chan_dt(struct device_node *of_chan,
 		return ret;
 	chan->dest_width = val / 8;
 
-	ret = of_property_read_u32(of_chan, "adi,length-width", &val);
-	if (ret)
-		return ret;
-
-	if (val >= 32)
-		chan->max_length = UINT_MAX;
-	else
-		chan->max_length = (1ULL << val) - 1;
-
 	chan->align_mask = max(chan->dest_width, chan->src_width) - 1;
 
 	if (axi_dmac_dest_is_mem(chan) && axi_dmac_src_is_mem(chan))
@@ -722,9 +715,6 @@ static int axi_dmac_parse_chan_dt(struct device_node *of_chan,
 		chan->direction = DMA_DEV_TO_MEM;
 	else
 		chan->direction = DMA_DEV_TO_DEV;
-
-	chan->hw_cyclic = of_property_read_bool(of_chan, "adi,cyclic");
-	chan->hw_2d = of_property_read_bool(of_chan, "adi,2d");
 
 	return 0;
 }
@@ -776,20 +766,27 @@ static int axi_dmac_parse_chan_dt_compat(struct device_node *of_node,
 	of_property_read_u32(of_chan, "adi,destination-bus-width", &tmp);
 	chan->dest_width = tmp / 8;
 
-	tmp = 24;
-	of_property_read_u32(of_chan, "adi,length-width", &tmp);
-
-	if (tmp >= 32)
-		chan->max_length = UINT_MAX;
-	else
-		chan->max_length = (1ULL << tmp) - 1;
-
 	chan->align_mask = max(chan->dest_width, chan->src_width) - 1;
 
-	chan->hw_cyclic = of_property_read_bool(of_chan, "adi,cyclic");
-	chan->hw_2d = true;
-
 	return 0;
+}
+
+static void axi_dmac_detect_caps(struct axi_dmac *dmac)
+{
+	struct axi_dmac_chan *chan = &dmac->chan;
+
+	axi_dmac_write(dmac, AXI_DMAC_REG_FLAGS, AXI_DMAC_FLAG_CYCLIC);
+	if (axi_dmac_read(dmac, AXI_DMAC_REG_FLAGS) == AXI_DMAC_FLAG_CYCLIC)
+		chan->hw_cyclic = true;
+
+	axi_dmac_write(dmac, AXI_DMAC_REG_Y_LENGTH, 1);
+	if (axi_dmac_read(dmac, AXI_DMAC_REG_Y_LENGTH) == 1)
+		chan->hw_2d = true;
+
+	axi_dmac_write(dmac, AXI_DMAC_REG_X_LENGTH, 0xffffffff);
+	chan->max_length = axi_dmac_read(dmac, AXI_DMAC_REG_X_LENGTH);
+	if (chan->max_length != UINT_MAX)
+		chan->max_length++;
 }
 
 static int axi_dmac_probe(struct platform_device *pdev)
@@ -866,6 +863,8 @@ static int axi_dmac_probe(struct platform_device *pdev)
 	ret = clk_prepare_enable(dmac->clk);
 	if (ret < 0)
 		return ret;
+
+	axi_dmac_detect_caps(dmac);
 
 	axi_dmac_write(dmac, AXI_DMAC_REG_IRQ_MASK, 0x00);
 

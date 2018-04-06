@@ -3,7 +3,7 @@
  *
  * \brief Contains macro definitions and global structure declarations for mykonos_user.c
  *
- * Mykonos API version: 1.4.0.3546
+ * Mykonos API version: 1.5.1.3565
  */
 
 /**
@@ -11,7 +11,7 @@
 * Copyright 2015-2017 Analog Devices Inc.
 * Released under the AD9371 API license, for more information see the "LICENSE.txt" file in this zip file.
 *
- */
+*/
 
 #ifndef _MYKONOSPROFILES_H_
 #define _MYKONOSPROFILES_H_
@@ -22,7 +22,7 @@ extern "C" {
 
 /* turns verbose messaging on */
 #define MYKONOS_VERBOSE 0
-#define MYK_ENABLE_SPIWRITEARRAY 0
+#define MYK_ENABLE_SPIWRITEARRAY 1
 
 /* 3 Bytes per SPI transaction * 341 transactions = ~1024 byte buffer size */
 /* Minimum MYK_SPIWRITEARRAY_BUFFERSIZE = 27 */

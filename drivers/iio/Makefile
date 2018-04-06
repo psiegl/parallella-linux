@@ -8,6 +8,7 @@ industrialio-$(CONFIG_IIO_BUFFER) += industrialio-buffer.o
 industrialio-$(CONFIG_IIO_TRIGGER) += industrialio-trigger.o
 
 obj-$(CONFIG_IIO_CONFIGFS) += industrialio-configfs.o
+obj-$(CONFIG_IIO_SW_DEVICE) += industrialio-sw-device.o
 obj-$(CONFIG_IIO_SW_TRIGGER) += industrialio-sw-trigger.o
 obj-$(CONFIG_IIO_TRIGGERED_EVENT) += industrialio-triggered-event.o
 
@@ -24,6 +25,7 @@ obj-y += frequency/
 obj-y += health/
 obj-y += humidity/
 obj-y += imu/
+obj-y += jesd204/
 obj-y += light/
 obj-y += magnetometer/
 obj-y += orientation/

@@ -2227,6 +2227,7 @@
  *	REG_RX_CP_CONFIG
  */
 #define HALF_VCO_CAL_CLK		     (1 << 7) /* Half Vco Cal Clk */
+#define CP_OFFSET_OFF			     (1 << 4) /* CP Offset Off */
 #define F_CPCAL				     (1 << 3) /* F Cpcal */
 #define CP_CAL_ENABLE			     (1 << 2) /* Cp Cal Enable */
 
@@ -2806,7 +2807,8 @@
 #define MIN_VCO_FREQ_HZ			6000000000ULL
 
 #define MAX_CARRIER_FREQ_HZ		6000000000ULL
-#define MIN_CARRIER_FREQ_HZ		70000000ULL
+#define MIN_RX_CARRIER_FREQ_HZ		70000000ULL
+#define MIN_TX_CARRIER_FREQ_HZ		46875001ULL
 
 #define AD9363A_MAX_CARRIER_FREQ_HZ	3800000000ULL
 #define AD9363A_MIN_CARRIER_FREQ_HZ	325000000ULL
@@ -2872,6 +2874,7 @@ struct gain_control {
 	u16 lmt_overload_low_thresh; /* 16..800 mV, 0x108 */
 	u16 dec_pow_measuremnt_duration; /* Samples, 0x15C */
 	u8 low_power_thresh; /* -64..0 dBFS, 0x114 */
+	bool use_rx_fir_out_for_dec_pwr_meas; /* clears 0x15C:6 USE_HB1_OUT_FOR_DEC_PWR_MEAS */
 
 	bool dig_gain_en; /* should be turned off, since ADI GT doesn't use dig gain */
 	u8 max_dig_gain; /* 0..31 */
@@ -3134,6 +3137,8 @@ struct ad9361_phy_platform_data {
 	u32			dcxo_fine;
 	u32			rf_rx_input_sel;
 	u32			rf_tx_output_sel;
+	bool			rf_rx_input_sel_lock;
+	bool			rf_tx_output_sel_lock;
 	u32			rx1tx1_mode_use_rx_num;
 	u32			rx1tx1_mode_use_tx_num;
 	unsigned long		rx_path_clks[NUM_RX_CLOCKS];
@@ -3323,7 +3328,7 @@ struct ad9361_rf_phy {
 	struct refclk_scale	clk_priv[NUM_AD9361_CLKS];
 	struct clk_onecell_data	clk_data;
 	struct ad9361_phy_platform_data *pdata;
-	struct ad9361_debugfs_entry debugfs_entry[177];
+	struct ad9361_debugfs_entry debugfs_entry[180];
 	struct bin_attribute 	bin;
 	struct bin_attribute 	bin_gt;
 	struct iio_dev 		*indio_dev;
@@ -3339,6 +3344,9 @@ struct ad9361_rf_phy {
 	u8			cached_synth_pd[2];
 	int			tx_quad_lpf_tia_match;
 	int			current_table;
+	int			rx_sampl_freq_avail[3];
+	int			tx_sampl_freq_avail[3];
+	int 			rx_gain_avail[3];
 
 	bool 			ensm_pin_ctl_en;
 
@@ -3398,6 +3406,8 @@ int ad9361_bist_prbs(struct ad9361_rf_phy *phy, enum ad9361_bist_mode mode);
 int ad9361_find_opt(u8 *field, u32 size, u32 *ret_start);
 int ad9361_set_ensm_mode(struct ad9361_rf_phy *phy, bool fdd, bool pinctrl);
 void ad9361_ensm_force_state(struct ad9361_rf_phy *phy, u8 ensm_state);
+u8 ad9361_ensm_get_state(struct ad9361_rf_phy *phy);
+void ad9361_ensm_restore_state(struct ad9361_rf_phy *phy, u8 ensm_state);
 void ad9361_ensm_restore_prev_state(struct ad9361_rf_phy *phy);
 int ad9361_set_trx_clock_chain_freq(struct ad9361_rf_phy *phy,
 					  unsigned long freq);
@@ -3407,6 +3417,7 @@ int ad9361_set_trx_clock_chain(struct ad9361_rf_phy *phy,
 int ad9361_dig_tune(struct ad9361_rf_phy *phy, unsigned long max_freq,
 			   enum dig_tune_flags flags);
 int ad9361_tx_mute(struct ad9361_rf_phy *phy, u32 state);
+int ad9361_write_bist_reg(struct ad9361_rf_phy *phy, u32 val);
 
 #endif
 

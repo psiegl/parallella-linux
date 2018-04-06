@@ -483,6 +483,24 @@ static int ad9371_init_cal(struct ad9371_rf_phy *phy, uint32_t initCalMask)
 	return 0;
 }
 
+static const char * const ad9371_ilas_mismatch_table[] = {
+	"device ID",
+	"bank ID",
+	"lane ID",
+	"lanes per converter",
+	"scrambling",
+	"octets per frame",
+	"frames per multiframe",
+	"number of converters",
+	"sample resolution",
+	"control bits per sample",
+	"bits per sample",
+	"samples per frame",
+	"control words per frame",
+	"high density",
+	"checksum"
+};
+
 static int ad9371_setup(struct ad9371_rf_phy *phy)
 {
 	int ret;
@@ -491,12 +509,13 @@ static int ad9371_setup(struct ad9371_rf_phy *phy)
 
 	uint8_t deframerStatus = 0;
 	uint8_t obsFramerStatus = 0;
-//	uint16_t mismatch = 0;
+	uint16_t mismatch = 0;
 	uint8_t framerStatus = 0;
 	mykonosErr_t mykError;
 	unsigned long lane_rate_kHz;
 	long dev_clk, fmc_clk;
 	uint32_t initCalMask;
+	unsigned int i;
 
 	mykonosDevice_t *mykDevice = phy->mykDevice;
 
@@ -533,19 +552,6 @@ static int ad9371_setup(struct ad9371_rf_phy *phy)
 			mykDevice->clocks->deviceClock_kHz * 1000, dev_clk);
 		return -EINVAL;
 	}
-
-
-	// FIXME
-	ret = clk_set_rate(phy->jesd_rx_clk, 2457600);
-	if (ret < 0)
-		return ret;
-	ret = clk_set_rate(phy->jesd_rx_os_clk, 2457600);
-	if (ret < 0)
-		return ret;
-	ret = clk_set_rate(phy->jesd_tx_clk, 2457600);
-	if (ret < 0)
-		return ret;
-
 
 	lane_rate_kHz = mykDevice->rx->rxProfile->iqRate_kHz *
 			mykDevice->rx->framer->M *
@@ -740,6 +746,10 @@ static int ad9371_setup(struct ad9371_rf_phy *phy)
 	mykError = MYKONOS_enableSysrefToDeframer(mykDevice, 0);
 	mykError = MYKONOS_resetDeframer(mykDevice);
 
+	ret = clk_prepare_enable(phy->jesd_tx_clk);
+	if (ret < 0)
+		return ret;
+
 	/*** < User: make sure BBIC JESD framer is actively transmitting CGS> ***/
 	mykError = MYKONOS_enableSysrefToDeframer(mykDevice, 1);
 
@@ -752,10 +762,6 @@ static int ad9371_setup(struct ad9371_rf_phy *phy)
 		return ret;
 
 	ret = clk_prepare_enable(phy->jesd_rx_os_clk);
-	if (ret < 0)
-		return ret;
-
-	ret = clk_prepare_enable(phy->jesd_tx_clk);
 	if (ret < 0)
 		return ret;
 
@@ -778,13 +784,19 @@ static int ad9371_setup(struct ad9371_rf_phy *phy)
 	/**** Check Mykonos Deframer Status ***/
 	/**************************************/
 	mykError = MYKONOS_readDeframerStatus(mykDevice, &deframerStatus);
-	if (deframerStatus != 0x68)
+	if (deframerStatus != 0x28)
 		dev_warn(&phy->spi->dev, "deframerStatus (0x%X)", deframerStatus);
 
 
-	/* FIXME: There are some knwon and harmless mismatches LID/DID/etc.
 	mykError = MYKONOS_jesd204bIlasCheck(mykDevice, &mismatch);
-	*/
+	if (mismatch) {
+		dev_warn(&phy->spi->dev, "ILAS mismatch: %04x\n", mismatch);
+		for (i = 0; i < ARRAY_SIZE(ad9371_ilas_mismatch_table); i++) {
+			if (mismatch & BIT(i))
+				dev_warn(&phy->spi->dev, "ILAS %s did not match\n",
+					ad9371_ilas_mismatch_table[i]);
+		}
+	}
 
 	/*** < User: When links have been verified, proceed > ***/
 
@@ -1829,7 +1841,7 @@ static int find_table_index(struct ad9371_rf_phy *phy, mykonosGainTable_t table,
 	u32 i, nm1, n;
 
 	for (i = 0; i < phy->gt_info[table].max_index; i++) {
-		if (phy->gt_info[table].abs_gain_tbl[i] > gain) {
+		if (phy->gt_info[table].abs_gain_tbl[i] <= gain) {
 			nm1 = abs(phy->gt_info[table].abs_gain_tbl[
 				(i > 0) ? i - 1 : i] - gain);
 			n = abs(phy->gt_info[table].abs_gain_tbl[i]
@@ -1854,7 +1866,7 @@ static int ad9371_gain_to_gainindex(struct ad9371_rf_phy *phy, int channel,
 		if (phy->gt_info[RX1_RX2_GT].abs_gain_tbl) {
 			ret = find_table_index(phy, RX1_RX2_GT, gain);
 			if (ret >= 0) {
-				*index = ret;
+				*index = phy->mykDevice->rx->rxGainCtrl->rx1MaxGainIndex - ret;
 				break;
 			}
 		}
@@ -1862,7 +1874,7 @@ static int ad9371_gain_to_gainindex(struct ad9371_rf_phy *phy, int channel,
 		if (phy->gt_info[RX1_GT].abs_gain_tbl) {
 			ret = find_table_index(phy, RX1_GT, gain);
 			if (ret >= 0) {
-				*index = ret;
+				*index = phy->mykDevice->rx->rxGainCtrl->rx1MaxGainIndex - ret;
 				break;
 			}
 		}
@@ -1876,7 +1888,7 @@ static int ad9371_gain_to_gainindex(struct ad9371_rf_phy *phy, int channel,
 		if (phy->gt_info[RX1_RX2_GT].abs_gain_tbl) {
 			ret = find_table_index(phy, RX1_RX2_GT, gain);
 			if (ret >= 0) {
-				*index = ret;
+				*index = phy->mykDevice->rx->rxGainCtrl->rx2MaxGainIndex - ret;
 				break;
 			}
 		}
@@ -1884,7 +1896,7 @@ static int ad9371_gain_to_gainindex(struct ad9371_rf_phy *phy, int channel,
 		if (phy->gt_info[RX2_GT].abs_gain_tbl) {
 			ret = find_table_index(phy, RX1_GT, gain);
 			if (ret >= 0) {
-				*index = ret;
+				*index = phy->mykDevice->rx->rxGainCtrl->rx2MaxGainIndex - ret;
 				break;
 			}
 		}
@@ -1898,7 +1910,7 @@ static int ad9371_gain_to_gainindex(struct ad9371_rf_phy *phy, int channel,
 			if (phy->gt_info[SNRX_GT].abs_gain_tbl) {
 				ret = find_table_index(phy, SNRX_GT, gain);
 				if (ret >= 0) {
-					*index = ret;
+					*index = phy->mykDevice->obsRx->snifferGainCtrl->maxGainIndex - ret;
 					break;
 				}
 			}
@@ -1912,7 +1924,7 @@ static int ad9371_gain_to_gainindex(struct ad9371_rf_phy *phy, int channel,
 		if (phy->gt_info[ORX_GT].abs_gain_tbl) {
 			ret = find_table_index(phy, ORX_GT, gain);
 			if (ret >= 0) {
-				*index = ret;
+				*index = phy->mykDevice->obsRx->orxGainCtrl->maxGainIndex - ret;
 				break;
 			}
 		}
@@ -3649,16 +3661,14 @@ static int ad9371_probe(struct spi_device *spi)
 	struct clk *clk = NULL;
 	int ret;
 	u8 vers[3], rev;
-
-	struct device_node *np = spi->dev.of_node;
+	mykonosBuild_t buildType;
+	u32 api_vers[4];
 
 	dev_info(&spi->dev, "%s : enter", __func__);
 
-
-	clk = of_clk_get_by_name(np, "jesd_rx_clk");
-	if (IS_ERR(clk)) {
-		return -EPROBE_DEFER;
-	}
+	clk = devm_clk_get(&spi->dev, "jesd_rx_clk");
+	if (IS_ERR(clk))
+		return PTR_ERR(clk);
 
 	indio_dev = devm_iio_device_alloc(&spi->dev, sizeof(*phy));
 	if (indio_dev == NULL)
@@ -3692,25 +3702,21 @@ static int ad9371_probe(struct spi_device *spi)
 	phy->mykDevice->spiSettings->autoIncAddrUp       = 1;
 	phy->mykDevice->spiSettings->fourWireMode        = 1;
 
-	phy->jesd_tx_clk = of_clk_get_by_name(np, "jesd_tx_clk");
-	if (IS_ERR(phy->jesd_tx_clk)) {
-		return -EPROBE_DEFER;
-	}
+	phy->jesd_tx_clk = devm_clk_get(&spi->dev, "jesd_tx_clk");
+	if (IS_ERR(phy->jesd_tx_clk))
+		return PTR_ERR(phy->jesd_tx_clk);
 
-	phy->jesd_rx_os_clk = of_clk_get_by_name(np, "jesd_rx_os_clk");
-	if (IS_ERR(phy->jesd_rx_os_clk)) {
-		return -EPROBE_DEFER;
-	}
+	phy->jesd_rx_os_clk = devm_clk_get(&spi->dev, "jesd_rx_os_clk");
+	if (IS_ERR(phy->jesd_rx_os_clk))
+		return PTR_ERR(phy->jesd_rx_os_clk);
 
-	phy->dev_clk = of_clk_get_by_name(np, "dev_clk");
-	if (IS_ERR(phy->dev_clk)) {
-		return -EPROBE_DEFER;
-	}
+	phy->dev_clk = devm_clk_get(&spi->dev, "dev_clk");
+	if (IS_ERR(phy->dev_clk))
+		return PTR_ERR(phy->dev_clk);
 
-	phy->fmc_clk = of_clk_get_by_name(np, "fmc_clk");
-	if (IS_ERR(phy->fmc_clk)) {
-		return -EPROBE_DEFER;
-	}
+	phy->fmc_clk = devm_clk_get(&spi->dev, "fmc_clk");
+	if (IS_ERR(phy->fmc_clk))
+		return PTR_ERR(phy->fmc_clk);
 
 	ret = clk_prepare_enable(phy->fmc_clk);
 	if (ret)
@@ -3736,13 +3742,13 @@ static int ad9371_probe(struct spi_device *spi)
 	}
 
 	ad9371_clk_register(phy, "-rx_sampl_clk", NULL, NULL,
-			    CLK_GET_RATE_NOCACHE | CLK_IGNORE_UNUSED | CLK_IS_ROOT, RX_SAMPL_CLK);
+			    CLK_GET_RATE_NOCACHE | CLK_IGNORE_UNUSED , RX_SAMPL_CLK);
 
 	ad9371_clk_register(phy, "-obs_sampl_clk", NULL, NULL,
-			    CLK_GET_RATE_NOCACHE | CLK_IGNORE_UNUSED | CLK_IS_ROOT, OBS_SAMPL_CLK);
+			    CLK_GET_RATE_NOCACHE | CLK_IGNORE_UNUSED, OBS_SAMPL_CLK);
 
 	ad9371_clk_register(phy, "-tx_sampl_clk", NULL, NULL,
-			    CLK_GET_RATE_NOCACHE | CLK_IGNORE_UNUSED | CLK_IS_ROOT, TX_SAMPL_CLK);
+			    CLK_GET_RATE_NOCACHE | CLK_IGNORE_UNUSED, TX_SAMPL_CLK);
 
 	phy->clk_data.clks = phy->clks;
 	phy->clk_data.clk_num = NUM_AD9371_CLKS;
@@ -3805,11 +3811,13 @@ static int ad9371_probe(struct spi_device *spi)
 	if (ret < 0)
 		dev_warn(&spi->dev, "%s: failed to register debugfs", __func__);
 
-	MYKONOS_getArmVersion(phy->mykDevice, &vers[0], &vers[1], &vers[2]);
+	MYKONOS_getArmVersion(phy->mykDevice, &vers[0], &vers[1], &vers[2], &buildType);
+	MYKONOS_getApiVersion(phy->mykDevice, &api_vers[0], &api_vers[1], &api_vers[2], &api_vers[3]);
 	MYKONOS_getDeviceRev(phy->mykDevice, &rev);
 
-	dev_info(&spi->dev, "%s : AD937%d Rev %d, Firmware %u.%u.%u successfully initialized",
-		 __func__, AD937x_PARTID(phy), rev, vers[0], vers[1], vers[2]);
+	dev_info(&spi->dev, "%s : AD937%d Rev %d, Firmware %u.%u.%u API version: %u.%u.%u.%u successfully initialized",
+		 __func__, AD937x_PARTID(phy), rev, vers[0], vers[1], vers[2],
+		 api_vers[0], api_vers[1], api_vers[2], api_vers[3]);
 
 	return 0;
 

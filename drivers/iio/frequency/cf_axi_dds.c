@@ -37,7 +37,7 @@
 #include "cf_axi_dds.h"
 #include "ad9122.h"
 
-const unsigned int interpolation_factors_available[] = {1, 8};
+static const unsigned int interpolation_factors_available[] = {1, 8};
 
 static unsigned cf_axi_dds_to_signed_mag_fmt(int val, int val2)
 {
@@ -400,9 +400,11 @@ static ssize_t cf_axi_sampling_frequency_available(struct device *dev,
 		return ret;
 	}
 
-	for (i = 0; i < ARRAY_SIZE(interpolation_factors_available); i++)
+	for (i = 0, ret = 0; i < ARRAY_SIZE(interpolation_factors_available); i++)
 		ret += snprintf(buf + ret, PAGE_SIZE - ret, "%ld ",
 				freq / interpolation_factors_available[i]);
+
+	ret += snprintf(&buf[ret], PAGE_SIZE - ret, "\n");
 
 	mutex_unlock(&indio_dev->mlock);
 
